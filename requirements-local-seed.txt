@@ -1,0 +1,20 @@
+# Minimal local environment for seed building and smoke checks.
+# This intentionally excludes llama-cpp, bitsandbytes, PyG, and MedReason-8B runtime deps.
+
+numpy<2
+packaging>=24.1
+pydantic>=2.7,<3
+loguru>=0.7.2
+requests>=2.32
+networkx>=3.2
+pandas>=2.2
+rank-bm25>=0.2.2
+transformers>=4.44.0
+sentence-transformers>=3.0.1
+datasets>=2.20.0
+huggingface-hub>=0.24.0
+accelerate>=0.25.0
+einops>=0.8.1
+spacy>=3.7,<3.8
+scispacy==0.5.4
+en-core-sci-lg @ https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_lg-0.5.4.tar.gz

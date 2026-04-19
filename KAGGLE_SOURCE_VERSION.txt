@@ -1,0 +1,7 @@
+MiniMed Prime Kaggle source package
+version: 2026-04-20-ticket-017-trm-validation-and-nonstrict-mode
+notes:
+- Added detailed checkpoint inspection and state-dict compatibility diagnostics for Samsung TRM loading
+- Added robust dummy forward-pass validation with input/output shape/type logging
+- Added strict/non-strict TRM validation mode for emergency loading paths
+- Wired trm_strict_validate through orchestrator and CLI scripts (smoke_test, verify_components, check_trm_ready)

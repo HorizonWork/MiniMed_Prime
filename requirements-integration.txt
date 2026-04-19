@@ -1,0 +1,18 @@
+# Integration-time dependencies for real-component setup.
+# `scripts/setup_environment.py` installs these packages in an idempotent, best-effort way
+# and handles PyG/llama-cpp special cases based on the local torch and CUDA environment.
+
+spacy>=3.7,<3.8
+scispacy>=0.5.5,<0.7
+en-core-sci-lg @ https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz
+transformers>=4.44.0
+sentence-transformers>=3.0.1
+datasets>=2.20.0
+huggingface-hub>=0.24.0
+bitsandbytes>=0.41.0
+accelerate>=0.25.0
+einops>=0.8.1
+torch-geometric>=2.5.3
+torch-scatter>=2.1.2
+torch-sparse>=0.6.18
+llama-cpp-python>=0.3.0
