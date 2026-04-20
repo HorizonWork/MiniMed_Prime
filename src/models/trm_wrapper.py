@@ -7,7 +7,7 @@ import math
 import sys
 import traceback
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -563,6 +563,27 @@ def create_dummy_input_for_trm(
     }
 
 
+def move_nested_tensors_to_device(value: Any, device: torch.device) -> Any:
+    """Move tensors inside Samsung/fallback carry dataclasses to the target device."""
+    if isinstance(value, torch.Tensor):
+        return value.to(device)
+    if is_dataclass(value) and not isinstance(value, type):
+        moved_fields = {item.name: move_nested_tensors_to_device(getattr(value, item.name), device) for item in fields(value)}
+        try:
+            return type(value)(**moved_fields)
+        except TypeError:
+            for name, moved_value in moved_fields.items():
+                setattr(value, name, moved_value)
+            return value
+    if isinstance(value, dict):
+        return {key: move_nested_tensors_to_device(item, device) for key, item in value.items()}
+    if isinstance(value, list):
+        return [move_nested_tensors_to_device(item, device) for item in value]
+    if isinstance(value, tuple):
+        return tuple(move_nested_tensors_to_device(item, device) for item in value)
+    return value
+
+
 def load_trm_model_bundle(
     model_path: str | Path,
     device: str | torch.device = "cpu",
@@ -866,11 +887,23 @@ def _validate_loaded_trm(
     )
     diagnostics.append(f"Dummy input shapes: {shape_summary}")
     try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = torch.device("cpu")
+    forward_code = getattr(getattr(model, "forward", None), "__code__", None)
+    forward_args = tuple(forward_code.co_varnames[:5]) if forward_code is not None else ()
+    diagnostics.append(f"Model class: {model.__class__.__name__}")
+    diagnostics.append(f"Model device: {model_device}")
+    diagnostics.append(f"Dummy input device: {dummy_batch['inputs'].device}")
+    diagnostics.append(f"Model expects input type: {forward_args}")
+    try:
         outputs: Any | None = None
         validation_api = "uninitialized"
         with torch.no_grad():
             if hasattr(model, "initial_carry"):
-                carry = model.initial_carry(dummy_batch)  # type: ignore[call-arg]
+                with torch.device(device):
+                    carry = model.initial_carry(dummy_batch)  # type: ignore[call-arg]
+                carry = move_nested_tensors_to_device(carry, device)
                 validation_api = "initial_carry+forward(carry,batch)"
                 call_output = model(carry, dummy_batch)
                 if (
@@ -1387,6 +1420,7 @@ __all__ = [
     "initialize_official_medical_trm",
     "load_real_trm",
     "load_trm_model_bundle",
+    "move_nested_tensors_to_device",
     "stablemax_cross_entropy",
     "verify_trm_repo",
 ]

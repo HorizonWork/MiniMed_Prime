@@ -11,7 +11,7 @@ from typing import Any, Sequence
 import torch
 import torch.nn.functional as F
 
-from src.models.trm_wrapper import TRMModelBundle, load_trm_model_bundle, stablemax_cross_entropy
+from src.models.trm_wrapper import TRMModelBundle, load_trm_model_bundle, move_nested_tensors_to_device, stablemax_cross_entropy
 from src.schemas import EvidenceBundle, KGEdge, Path as ReasoningPath, TRMOutput
 from src.utils.checkpoint import CheckpointManager, resume_or_initialize
 from src.utils.kaggle_env import KaggleEnv, T4Hardening
@@ -153,7 +153,9 @@ class TRMReasoner:
         }
         batch, remap_info = self._align_batch_to_model_vocab(batch)
         batch["labels"] = batch["inputs"]
-        carry = self.model.initial_carry(batch)
+        with torch.device(self.device):
+            carry = self.model.initial_carry(batch)
+        carry = move_nested_tensors_to_device(carry, self.device)
 
         trace: list[dict[str, Any]] = []
         final_outputs: dict[str, torch.Tensor] | None = None
@@ -539,7 +541,9 @@ class TRMReasoner:
         train_batch["labels"] = train_batch["inputs"]
 
         self.model.train()
-        carry = self.model.initial_carry(train_batch)
+        with torch.device(self.device):
+            carry = self.model.initial_carry(train_batch)
+        carry = move_nested_tensors_to_device(carry, self.device)
         final_outputs: dict[str, torch.Tensor] | None = None
         steps_taken = 0
         autocast_context = (

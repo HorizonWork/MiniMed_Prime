@@ -1,7 +1,7 @@
 MiniMed Prime Kaggle source package
-version: 2026-04-20-ticket-017-trm-validation-and-nonstrict-mode
+version: 2026-04-20-ticket-022-gold-path-coverage-gate
 notes:
-- Added detailed checkpoint inspection and state-dict compatibility diagnostics for Samsung TRM loading
-- Added robust dummy forward-pass validation with input/output shape/type logging
-- Added strict/non-strict TRM validation mode for emergency loading paths
-- Wired trm_strict_validate through orchestrator and CLI scripts (smoke_test, verify_components, check_trm_ready)
+- Replaced copy-trivial TRM dataset labels with ordered gold-path token supervision
+- Added row-level label debug metadata and dataset build reject-rate reporting
+- Added seed-quality gold path coverage gate with configurable thresholds
+- Rejects zero-label goldish rows before train/val dataset export

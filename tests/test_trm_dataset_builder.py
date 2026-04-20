@@ -22,14 +22,14 @@ class FakeEmbedder:
     def __call__(self, bundle: EvidenceBundle) -> dict[str, object]:
         del bundle
         inputs = torch.full((1, 256), self.padding_token_id, dtype=torch.long)
-        inputs[0, :4] = torch.tensor([101, 102, 103, 104], dtype=torch.long)
+        inputs[0, :4] = torch.tensor([103, 101, 102, 104], dtype=torch.long)
         return {
             "inputs": inputs,
             "puzzle_identifiers": torch.tensor([0], dtype=torch.long),
             "node_mapping": {
-                0: "drug:warfarin",
-                1: "drug:metronidazole",
-                2: "protein:CYP2C9",
+                0: "protein:CYP2C9",
+                1: "drug:warfarin",
+                2: "drug:metronidazole",
                 3: "drug:clarithromycin",
                 **{index: "__pad__" for index in range(4, 256)},
             },
@@ -97,7 +97,38 @@ def test_path_to_token_sequence_maps_gold_edges_to_node_tokens() -> None:
     assert labels[:3].tolist() == [101, 102, 103]
     assert labels[3].item() == -100
     assert diagnostics["labeled_positions"] == [0, 1, 2]
-    assert diagnostics["missing_edge_ids"] == []
+    assert diagnostics["source_positions"] == [1, 2, 0]
+    assert diagnostics["gold_path_len"] == 2
+    assert diagnostics["labeled_token_count"] == 3
+    assert diagnostics["label_mode"] == "ordered_node_token_sequence"
+    assert diagnostics["missing_gold_edges"] == []
+    assert diagnostics["missing_gold_nodes"] == []
+
+
+def test_path_labels_are_not_trivial_position_copies() -> None:
+    evidence = make_evidence()
+    encoded = FakeEmbedder()(evidence)
+
+    labels, _diagnostics = path_to_token_sequence(["E_22104", "E_08812"], encoded, evidence)
+    inputs = encoded["inputs"][0]
+    valid_mask = labels != -100
+
+    assert labels[valid_mask].tolist() == [101, 102, 103]
+    assert inputs[valid_mask].tolist() == [103, 101, 102]
+    assert not torch.equal(labels[valid_mask], inputs[valid_mask])
+
+
+def test_path_labels_change_with_gold_path_order_for_same_retrieval_order() -> None:
+    evidence = make_evidence()
+    encoded = FakeEmbedder()(evidence)
+
+    forward_labels, forward_diagnostics = path_to_token_sequence(["E_22104", "E_08812"], encoded, evidence)
+    reverse_labels, reverse_diagnostics = path_to_token_sequence(["E_08812", "E_22104"], encoded, evidence)
+
+    assert forward_labels[:3].tolist() == [101, 102, 103]
+    assert reverse_labels[:3].tolist() == [103, 102, 101]
+    assert forward_diagnostics["ordered_gold_nodes"] == ["drug:warfarin", "drug:metronidazole", "protein:CYP2C9"]
+    assert reverse_diagnostics["ordered_gold_nodes"] == ["protein:CYP2C9", "drug:metronidazole", "drug:warfarin"]
 
 
 def test_build_and_save_trm_dataset_arrays(tmp_path: Path) -> None:
@@ -115,10 +146,33 @@ def test_build_and_save_trm_dataset_arrays(tmp_path: Path) -> None:
     assert arrays.metadata["seq_len"] == 256
     assert arrays.metadata["vocab_size"] == 8192
     assert arrays.metadata["pad_id"] == 4095
+    assert arrays.metadata["label_stats"]["label_mode"] == "ordered_node_token_sequence"
+    assert arrays.metadata["label_stats"]["rows_valid"] == 1
+    assert arrays.metadata["label_stats"]["invalid_label_reject_count"] == 0
+    assert arrays.row_metadata[0]["gold_path_len"] == 2
+    assert arrays.row_metadata[0]["labeled_token_count"] == 3
+    assert arrays.row_metadata[0]["missing_gold_nodes"] == []
+    assert arrays.row_metadata[0]["missing_gold_edges"] == []
 
     save_dir = save_trm_dataset(arrays, tmp_path / "trm_medical", split="train")
 
     assert json.loads((save_dir / "dataset.json").read_text(encoding="utf-8"))["seq_len"] == 256
+    assert json.loads((save_dir / "row_metadata.json").read_text(encoding="utf-8"))[0]["labeled_token_count"] == 3
     assert np.load(save_dir / "all__inputs.npy").shape == (1, 256)
     assert np.load(save_dir / "all__labels.npy").shape == (1, 256)
     assert np.load(save_dir / "all__puzzle_identifiers.npy").tolist() == [0]
+
+
+def test_build_trm_dataset_rejects_empty_gold_path() -> None:
+    evidence = make_evidence()
+
+    arrays = build_trm_dataset_arrays([TRMTrainingExample(evidence=evidence, gold_edge_ids=[])], FakeEmbedder())
+
+    assert arrays.inputs.shape == (0, 256)
+    assert arrays.labels.shape == (0, 256)
+    assert arrays.skipped_examples[0]["reason"] == "missing_gold_path"
+    assert arrays.skipped_examples[0]["gold_path_len"] == 0
+    assert arrays.skipped_examples[0]["labeled_token_count"] == 0
+    assert arrays.metadata["label_stats"]["rows_valid"] == 0
+    assert arrays.metadata["label_stats"]["invalid_label_reject_count"] == 1
+    assert arrays.metadata["label_stats"]["invalid_label_reject_rate"] == 1.0

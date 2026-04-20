@@ -39,10 +39,18 @@ def main() -> int:
     )
     arrays = build_trm_dataset_arrays(examples, embedder)
     save_dir = save_trm_dataset(arrays, KaggleEnv.path(args.output_dir), split=args.split)
+    label_stats = dict(arrays.metadata.get("label_stats", {}))
+    graph_stats = dict(arrays.metadata.get("graph_stats", {}))
     report = {
         "status": "SUCCESS" if arrays.inputs.shape[0] > 0 else "EMPTY",
         "examples_saved": int(arrays.inputs.shape[0]),
         "examples_skipped": len(arrays.skipped_examples),
+        "valid_rows": int(label_stats.get("rows_valid", arrays.inputs.shape[0])),
+        "rejected_rows": int(label_stats.get("rows_rejected", len(arrays.skipped_examples))),
+        "invalid_label_reject_count": int(label_stats.get("invalid_label_reject_count", 0)),
+        "invalid_label_reject_rate": float(label_stats.get("invalid_label_reject_rate", 0.0)),
+        "mean_labeled_token_count": float(graph_stats.get("mean_labeled_token_count", 0.0)),
+        "label_mode": label_stats.get("label_mode"),
         "save_dir": str(save_dir),
         "metadata": arrays.metadata,
     }

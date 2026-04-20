@@ -10,7 +10,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.training import DEFAULT_GOLDISH_BACKEND_PATTERNS, filter_seed_jsonl
+from src.training import (
+    DEFAULT_COVERAGE_TOP_K,
+    DEFAULT_GOLDISH_BACKEND_PATTERNS,
+    DEFAULT_MIN_GOLDISH_GOLD_EDGE_COVERAGE,
+    DEFAULT_MIN_GOLDISH_GOLD_NODE_COVERAGE,
+    DEFAULT_MIN_GOLDISH_LABELED_TOKEN_RATIO,
+    filter_seed_jsonl,
+)
 
 
 def main() -> int:
@@ -22,6 +29,25 @@ def main() -> int:
     parser.add_argument("--reject-name", default="trm_seed_rejects.jsonl")
     parser.add_argument("--summary-name", default="seed_quality_summary.json")
     parser.add_argument("--min-gold-edges", type=int, default=1)
+    parser.add_argument("--coverage-top-k", type=int, default=DEFAULT_COVERAGE_TOP_K, help="Top-K node budget used when estimating label coverage.")
+    parser.add_argument(
+        "--min-goldish-labeled-token-ratio",
+        type=float,
+        default=DEFAULT_MIN_GOLDISH_LABELED_TOKEN_RATIO,
+        help="Minimum estimated labeled gold-node ratio required for goldish rows.",
+    )
+    parser.add_argument(
+        "--min-goldish-gold-node-coverage",
+        type=float,
+        default=DEFAULT_MIN_GOLDISH_GOLD_NODE_COVERAGE,
+        help="Minimum gold-node presence in evidence required for goldish rows.",
+    )
+    parser.add_argument(
+        "--min-goldish-gold-edge-coverage",
+        type=float,
+        default=DEFAULT_MIN_GOLDISH_GOLD_EDGE_COVERAGE,
+        help="Minimum gold-edge presence in evidence required for goldish rows.",
+    )
     parser.add_argument(
         "--accepted-goldish-edge-backends",
         default=",".join(DEFAULT_GOLDISH_BACKEND_PATTERNS),
@@ -43,6 +69,10 @@ def main() -> int:
         accepted_goldish_edge_backends=accepted_patterns or DEFAULT_GOLDISH_BACKEND_PATTERNS,
         require_real_entity_linker=not args.allow_rule_based_entity_linker,
         require_real_primekg=not args.allow_unknown_primekg_backend,
+        min_goldish_labeled_token_ratio=args.min_goldish_labeled_token_ratio,
+        min_goldish_gold_node_coverage=args.min_goldish_gold_node_coverage,
+        min_goldish_gold_edge_coverage=args.min_goldish_gold_edge_coverage,
+        coverage_top_k=args.coverage_top_k,
     )
     sys.stdout.write(json.dumps(summary.to_json_dict(), indent=2, sort_keys=True) + "\n")
     return 0 if summary.goldish_records > 0 else 1

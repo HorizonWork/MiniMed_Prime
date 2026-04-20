@@ -49,6 +49,19 @@ DEFAULT_REVISION_RETRIES = 2
 DEFAULT_JSON_SCHEMA_INSTRUCTION = (
     "Return strict JSON only. Do not include markdown, commentary, or code fences."
 )
+EVIDENCE_ID_CONTRACT_INSTRUCTION = (
+    "For every claim, evidence_id must be exactly one of: "
+    "'edge:<id>' for a supplied KG edge, 'PMID:<id>' for a supplied PubMed passage, or 'none'. "
+    "Never use N/A, NA, null, unknown, not_applicable, an empty string, or invented IDs. "
+    "If a claim is unsupported or out_of_scope, set evidence_id to 'none'. "
+    "Use 'none' for abstain/H5 claims that cannot be grounded to a supplied evidence item."
+)
+EVIDENCE_ID_FEW_SHOT_EXAMPLES = (
+    "Evidence ID examples: "
+    "supported KG claim -> evidence_id='edge:E1'; "
+    "supported literature claim -> evidence_id='PMID:12345678'; "
+    "unsupported/out_of_scope/ungrounded claim -> evidence_id='none'."
+)
 DEFAULT_LOCAL_GENERATION_TOKENS = 512
 DEFAULT_NLI_MODEL_NAME = "roberta-large-mnli"
 DEFAULT_LIFE_CRITICAL_TERMS = {
@@ -156,6 +169,19 @@ DEFAULT_CONTRADICTION_THRESHOLD = 0.30
 DEFAULT_QUESTION_ENTITY_COVERAGE_THRESHOLD = 0.50
 DEFAULT_EXPECTED_EDGE_COUNT_COMPLEX = 2
 DEFAULT_EXPECTED_EDGE_COUNT_SIMPLE = 1
+NONE_EVIDENCE_ALIASES = {
+    "",
+    "n/a",
+    "na",
+    "n.a.",
+    "none",
+    "null",
+    "nil",
+    "unknown",
+    "not_applicable",
+    "not applicable",
+    "not-applicable",
+}
 
 ENTITY_VALIDATOR_SYSTEM_PROMPT = (
     "You validate biomedical entity linking. Reject fake CUIs, wrong PrimeKG mappings, and unsupported expansions."
@@ -245,9 +271,11 @@ class JudgeBase(ABC):
         fallback_payload: dict[str, Any] | None = None,
     ) -> SchemaT:
         schema_instruction = json.dumps(schema.model_json_schema(), indent=2, sort_keys=True)
+        schema_contract = _schema_contract_instruction(schema)
         constrained_prompt = (
             f"{self.system_prompt}\n\n"
             f"{DEFAULT_JSON_SCHEMA_INSTRUCTION}\n"
+            f"{schema_contract}\n"
             f"Schema:\n{schema_instruction}\n\n"
             f"Task:\n{prompt}"
         )
@@ -255,21 +283,69 @@ class JudgeBase(ABC):
             return self._validate_fallback(schema, fallback_payload)
 
         last_error: Exception | None = None
+        prompt_for_attempt = constrained_prompt
         for _ in range(DEFAULT_MAX_LLM_RETRIES):
             self.parse_attempts += 1
+            raw_output: str | None = None
+            payload: dict[str, Any] | None = None
+            sanitized_payload: dict[str, Any] | None = None
+            sanitizer_notes: list[str] = []
             try:
-                raw_output = self._generate_structured_text(constrained_prompt)
+                raw_output = self._generate_structured_text(prompt_for_attempt)
                 payload = self._extract_json_payload(raw_output)
-                validated = schema.model_validate(payload)
+                sanitized_payload, sanitizer_notes = _sanitize_payload_for_schema(schema, payload)
+                if sanitizer_notes:
+                    self.event_logger.log_event(
+                        "judge_payload_sanitized",
+                        {
+                            "judge_model": self.model_name,
+                            "schema": schema.__name__,
+                            "notes": sanitizer_notes,
+                            "parsed_json_before_validation": payload,
+                            "sanitized_payload": sanitized_payload,
+                            "backend_used": self.backend,
+                            "latency_ms": 0.0,
+                        },
+                    )
+                validated = schema.model_validate(sanitized_payload)
                 self.parse_successes += 1
                 return validated
             except Exception as exc:  # pragma: no cover - exercised only with model backends available
                 last_error = exc
-                logger.warning("Judge structured generation failed for {}: {}", self.model_name, exc)
+                reason = _validator_reason(exc)
+                logger.warning(f"Judge structured generation failed for {self.model_name}: {reason}")
+                self.event_logger.log_event(
+                    "judge_parse_failure_detail",
+                    {
+                        "judge_model": self.model_name,
+                        "schema": schema.__name__,
+                        "raw_model_text": _truncate_for_log(raw_output),
+                        "parsed_json_before_validation": payload,
+                        "sanitized_payload": sanitized_payload,
+                        "sanitizer_notes": sanitizer_notes,
+                        "validator_reason": reason,
+                        "backend_used": self.backend,
+                        "latency_ms": 0.0,
+                    },
+                )
                 self.event_logger.log_exception(
                     "judge_parse_failure",
                     exc,
-                    {"judge_model": self.model_name, "backend_used": self.backend, "latency_ms": 0.0},
+                    {
+                        "judge_model": self.model_name,
+                        "schema": schema.__name__,
+                        "validator_reason": reason,
+                        "backend_used": self.backend,
+                        "latency_ms": 0.0,
+                    },
+                )
+                prompt_for_attempt = _build_repair_prompt(
+                    constrained_prompt=constrained_prompt,
+                    raw_output=raw_output,
+                    parsed_payload=payload,
+                    sanitized_payload=sanitized_payload,
+                    validator_reason=reason,
+                    schema=schema,
                 )
 
         if fallback_payload is not None:
@@ -284,7 +360,21 @@ class JudgeBase(ABC):
         if fallback_payload is None:
             raise RuntimeError("Fallback payload is required for heuristic execution.")
         self.parse_attempts += 1
-        validated = schema.model_validate(fallback_payload)
+        sanitized_payload, sanitizer_notes = _sanitize_payload_for_schema(schema, fallback_payload)
+        if sanitizer_notes:
+            self.event_logger.log_event(
+                "judge_payload_sanitized",
+                {
+                    "judge_model": self.model_name,
+                    "schema": schema.__name__,
+                    "notes": sanitizer_notes,
+                    "parsed_json_before_validation": fallback_payload,
+                    "sanitized_payload": sanitized_payload,
+                    "backend_used": self.backend,
+                    "latency_ms": 0.0,
+                },
+            )
+        validated = schema.model_validate(sanitized_payload)
         self.parse_successes += 1
         return validated
 
@@ -594,7 +684,11 @@ class EvidenceGroundingInspector(JudgeBase):
             f"Question: {evidence_bundle.question_text}\n"
             f"Claims: {json.dumps(claims, ensure_ascii=True)}\n"
             f"Evidence: {json.dumps(self._serialize_evidence(evidence_bundle), ensure_ascii=True)}\n"
-            "Verify each claim against the evidence."
+            "Verify each claim against the evidence.\n"
+            f"{EVIDENCE_ID_CONTRACT_INSTRUCTION}\n"
+            f"{EVIDENCE_ID_FEW_SHOT_EXAMPLES}\n"
+            "Do not invent provenance. If no supplied edge or PubMed passage grounds a claim, "
+            "mark the claim unsupported or out_of_scope with evidence_id='none'."
         )
         result = self._call_llm(prompt=prompt, schema=JudgeOutput, fallback_payload=fallback.model_dump())
         self._log_verdict("grounding", result.overall_recommendation, (time.perf_counter() - started_at) * 1000.0)
@@ -1263,6 +1357,132 @@ def _tokenize_text(text: str) -> set[str]:
     return {token for token in tokens if token not in DEFAULT_STOPWORDS and len(token) > 1}
 
 
+def _schema_contract_instruction(schema: Type[BaseModel]) -> str:
+    if schema is JudgeOutput:
+        return f"Additional contract:\n{EVIDENCE_ID_CONTRACT_INSTRUCTION}\n{EVIDENCE_ID_FEW_SHOT_EXAMPLES}"
+    return "Additional contract: obey the schema exactly."
+
+
+def _sanitize_payload_for_schema(
+    schema: Type[SchemaT],
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    if schema is JudgeOutput:
+        return _sanitize_judge_output_payload(payload)
+    return dict(payload), []
+
+
+def _sanitize_judge_output_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    sanitized = dict(payload)
+    notes: list[str] = []
+    raw_claims = sanitized.get("claims")
+    if not isinstance(raw_claims, list):
+        return sanitized, notes
+
+    sanitized_claims: list[Any] = []
+    for index, raw_claim in enumerate(raw_claims):
+        if not isinstance(raw_claim, dict):
+            sanitized_claims.append(raw_claim)
+            continue
+
+        claim = dict(raw_claim)
+        verdict = str(claim.get("verdict", "")).strip().lower()
+        original_evidence_id = claim.get("evidence_id")
+        normalized_evidence_id, evidence_notes = _normalize_judge_evidence_id(original_evidence_id)
+        notes.extend(f"claims[{index}].evidence_id: {note}" for note in evidence_notes)
+
+        if verdict in {"unsupported", "out_of_scope"} and normalized_evidence_id != "none":
+            notes.append(
+                f"claims[{index}].evidence_id: forced to none because verdict={verdict} must not fabricate provenance"
+            )
+            normalized_evidence_id = "none"
+
+        claim["evidence_id"] = normalized_evidence_id
+        sanitized_claims.append(claim)
+
+    sanitized["claims"] = sanitized_claims
+    return sanitized, notes
+
+
+def _normalize_judge_evidence_id(value: Any) -> tuple[Any, list[str]]:
+    notes: list[str] = []
+    if value is None:
+        return "none", ["mapped null evidence_id to none"]
+    if not isinstance(value, str):
+        return value, []
+
+    original = value
+    normalized = value.strip()
+    if normalized != original:
+        notes.append("trimmed surrounding whitespace")
+
+    if normalized.lower() in NONE_EVIDENCE_ALIASES:
+        if normalized != "none":
+            notes.append(f"mapped {original!r} to none")
+        return "none", notes
+
+    if normalized.lower().startswith("pmid:"):
+        normalized = f"PMID:{normalized.split(':', 1)[1]}"
+        if normalized != original:
+            notes.append(f"normalized PMID prefix from {original!r}")
+        return normalized, notes
+
+    if normalized.lower().startswith("edge:"):
+        normalized = f"edge:{normalized.split(':', 1)[1]}"
+        if normalized != original:
+            notes.append(f"normalized edge prefix from {original!r}")
+        return normalized, notes
+
+    if normalized.startswith("edge_id:"):
+        normalized = f"edge:{normalized[len('edge_id:'):]}"
+        notes.append(f"normalized legacy edge_id prefix from {original!r}")
+        return normalized, notes
+
+    return normalized, notes
+
+
+def _build_repair_prompt(
+    *,
+    constrained_prompt: str,
+    raw_output: str | None,
+    parsed_payload: dict[str, Any] | None,
+    sanitized_payload: dict[str, Any] | None,
+    validator_reason: str,
+    schema: Type[BaseModel],
+) -> str:
+    return (
+        f"{constrained_prompt}\n\n"
+        "Your previous response failed validation. Return a corrected strict JSON object only.\n"
+        f"Validation error: {validator_reason}\n"
+        f"{_schema_contract_instruction(schema)}\n"
+        f"Previous raw response:\n{_truncate_for_log(raw_output, limit=2000)}\n"
+        f"Parsed JSON before validation:\n{json.dumps(parsed_payload, ensure_ascii=True, sort_keys=True) if parsed_payload is not None else 'null'}\n"
+        f"Sanitized payload before validation:\n{json.dumps(sanitized_payload, ensure_ascii=True, sort_keys=True) if sanitized_payload is not None else 'null'}"
+    )
+
+
+def _validator_reason(exc: Exception) -> str:
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        try:
+            first_error = errors()[0]
+            location = ".".join(str(item) for item in first_error.get("loc", ()))
+            message = str(first_error.get("msg", str(exc)))
+            return f"{location}: {message}" if location else message
+        except Exception:
+            pass
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _truncate_for_log(value: Any, *, limit: int = 4000) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...<truncated {len(text) - limit} chars>"
+
+
 __all__ = [
     "AnswerFaithfulnessGuardian",
     "EntityValidationResult",
@@ -1274,6 +1494,7 @@ __all__ = [
     "JudgeBase",
     "ReasoningSoundnessAuditor",
     "ReasoningSoundnessResult",
+    "_sanitize_payload_for_schema",
 ]
 
 

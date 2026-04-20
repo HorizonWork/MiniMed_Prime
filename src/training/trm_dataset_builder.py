@@ -23,6 +23,7 @@ DEFAULT_EDGE_PATTERN = re.compile(
     r"(?:edge_id|edge)\s*[:=]\s*['\"]?([A-Za-z0-9_.:-]+)|\[edge:([^\]]+)\]",
     re.IGNORECASE,
 )
+DEFAULT_LABEL_MODE = "ordered_node_token_sequence"
 
 
 @dataclass(slots=True)
@@ -42,6 +43,7 @@ class TRMDatasetArrays:
     group_indices: np.ndarray
     metadata: dict[str, Any]
     skipped_examples: list[dict[str, Any]] = field(default_factory=list)
+    row_metadata: list[dict[str, Any]] = field(default_factory=list)
 
 
 def parse_reasoning_chain(reasoning: Any) -> list[str]:
@@ -93,42 +95,57 @@ def path_to_token_sequence(
     max_len: int = DEFAULT_TRM_SEQ_LEN,
     ignore_label_id: int = DEFAULT_IGNORE_LABEL_ID,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
-    """Map gold KG edge path to TRM labels using Layer 2 token positions.
+    """Map a gold KG edge path to an ordered TRM target sequence.
 
-    Current Layer 2 exposes token-position provenance as node IDs, not edge IDs. This
-    function therefore labels the token positions of the ordered endpoint nodes touched
-    by the gold edges and ignores all other positions.
+    Layer 2 still exposes node provenance by input position, so the builder uses that
+    provenance only to translate gold-path nodes into their quantized token IDs. The
+    label positions are answer slots ordered by the gold path, not the retrieval/PPR
+    positions of the input tokens.
     """
     inputs = _coerce_inputs(embedder_output["inputs"], max_len=max_len)
     node_mapping = _normalize_node_mapping(embedder_output.get("node_mapping", {}))
-    position_by_node = {
-        node_id: position
-        for position, node_id in node_mapping.items()
-        if isinstance(node_id, str) and node_id and node_id != "__pad__" and not node_id.startswith("PMID:")
-    }
+    token_by_node = _node_tokens_by_id(inputs=inputs, node_mapping=node_mapping)
     edge_lookup = {edge.edge_id: edge for edge in evidence.subgraph_edges}
 
     labels = torch.full((max_len,), int(ignore_label_id), dtype=torch.long)
-    missing_edge_ids: list[str] = []
-    missing_node_ids: list[str] = []
+    missing_gold_edges: list[str] = []
+    missing_gold_nodes: list[str] = []
     labeled_positions: list[int] = []
+    source_positions: list[int] = []
+    labeled_node_ids: list[str] = []
+    truncated_gold_nodes: list[str] = []
 
-    for node_id in _edge_ids_to_node_path(gold_edge_ids, edge_lookup, missing_edge_ids):
-        position = position_by_node.get(node_id)
-        if position is None:
-            if node_id not in missing_node_ids:
-                missing_node_ids.append(node_id)
+    ordered_gold_nodes = _edge_ids_to_ordered_node_path(gold_edge_ids, edge_lookup, missing_gold_edges)
+    for node_id in ordered_gold_nodes:
+        token_record = token_by_node.get(node_id)
+        if token_record is None:
+            if node_id not in missing_gold_nodes:
+                missing_gold_nodes.append(node_id)
             continue
-        labels[position] = inputs[position]
-        if position not in labeled_positions:
-            labeled_positions.append(position)
+        if len(labeled_positions) >= max_len:
+            truncated_gold_nodes.append(node_id)
+            continue
+        target_position = len(labeled_positions)
+        source_position, token_id = token_record
+        labels[target_position] = int(token_id)
+        labeled_positions.append(target_position)
+        source_positions.append(source_position)
+        labeled_node_ids.append(node_id)
 
     diagnostics = {
         "gold_edge_ids": list(gold_edge_ids),
-        "missing_edge_ids": missing_edge_ids,
-        "missing_node_ids": missing_node_ids,
-        "labeled_positions": sorted(labeled_positions),
+        "gold_path_len": len(gold_edge_ids),
+        "ordered_gold_nodes": ordered_gold_nodes,
+        "labeled_node_ids": labeled_node_ids,
+        "missing_gold_edges": missing_gold_edges,
+        "missing_gold_nodes": missing_gold_nodes,
+        "missing_edge_ids": missing_gold_edges,
+        "missing_node_ids": missing_gold_nodes,
+        "labeled_positions": labeled_positions,
+        "source_positions": source_positions,
         "labeled_token_count": len(labeled_positions),
+        "label_mode": DEFAULT_LABEL_MODE,
+        "truncated_gold_nodes": truncated_gold_nodes,
     }
     return labels, diagnostics
 
@@ -147,6 +164,7 @@ def build_trm_dataset_arrays(
     label_rows: list[np.ndarray] = []
     puzzle_ids: list[int] = []
     skipped_examples: list[dict[str, Any]] = []
+    row_metadata: list[dict[str, Any]] = []
     pad_id = int(getattr(embedder, "padding_token_id", DEFAULT_FALLBACK_PAD_ID))
     total_seen = 0
     edge_counts: list[int] = []
@@ -168,10 +186,15 @@ def build_trm_dataset_arrays(
             skipped_examples.append(
                 {
                     "index": example_index,
-                    "reason": "missing_gold_edge_ids",
+                    "reason": "missing_gold_path",
                     "edge_count": edge_count,
                     "node_count": node_count,
                     "passage_count": passage_count,
+                    "gold_path_len": 0,
+                    "labeled_token_count": 0,
+                    "label_mode": DEFAULT_LABEL_MODE,
+                    "missing_gold_nodes": [],
+                    "missing_gold_edges": [],
                 }
             )
             continue
@@ -202,12 +225,33 @@ def build_trm_dataset_arrays(
         label_rows.append(labels.cpu().numpy().astype(np.int64, copy=False))
         puzzle_ids.append(int(QUESTION_TYPE_TO_PUZZLE_ID.get(example.evidence.question_type, QUESTION_TYPE_TO_PUZZLE_ID["other"])))
         labeled_token_counts.append(int(diagnostics["labeled_token_count"]))
+        row_metadata.append(
+            {
+                "index": example_index,
+                "group_id": example.group_id,
+                "question_id": example.evidence.question_id,
+                "gold_path_len": int(diagnostics["gold_path_len"]),
+                "labeled_token_count": int(diagnostics["labeled_token_count"]),
+                "label_mode": diagnostics["label_mode"],
+                "missing_gold_nodes": list(diagnostics["missing_gold_nodes"]),
+                "missing_gold_edges": list(diagnostics["missing_gold_edges"]),
+                "ordered_gold_nodes": list(diagnostics["ordered_gold_nodes"]),
+                "labeled_node_ids": list(diagnostics["labeled_node_ids"]),
+                "source_positions": list(diagnostics["source_positions"]),
+                "labeled_positions": list(diagnostics["labeled_positions"]),
+            }
+        )
 
     total_examples = len(input_rows)
+    invalid_label_reasons = {"missing_gold_path", "no_gold_tokens_mapped"}
+    invalid_label_reject_count = sum(1 for item in skipped_examples if item.get("reason") in invalid_label_reasons)
+    invalid_label_reject_rate = invalid_label_reject_count / total_seen if total_seen else 0.0
     graph_stats = {
         "examples_seen": total_seen,
         "examples_saved": total_examples,
         "examples_skipped": len(skipped_examples),
+        "invalid_label_reject_count": invalid_label_reject_count,
+        "invalid_label_reject_rate": invalid_label_reject_rate,
         "mean_edge_count": _mean(edge_counts),
         "max_edge_count": max(edge_counts, default=0),
         "mean_node_count": _mean(node_counts),
@@ -235,8 +279,16 @@ def build_trm_dataset_arrays(
             "total_puzzles": total_examples,
             "sets": ["all"],
             "graph_stats": graph_stats,
+            "label_stats": {
+                "label_mode": DEFAULT_LABEL_MODE,
+                "rows_valid": total_examples,
+                "rows_rejected": len(skipped_examples),
+                "invalid_label_reject_count": invalid_label_reject_count,
+                "invalid_label_reject_rate": invalid_label_reject_rate,
+            },
         },
         skipped_examples=skipped_examples,
+        row_metadata=row_metadata,
     )
     event_logger.log_event(
         "trm_dataset_arrays_built",
@@ -263,6 +315,10 @@ def save_trm_dataset(arrays: TRMDatasetArrays, output_dir: Path, split: str = "t
     np.save(save_dir / "all__puzzle_identifiers.npy", arrays.puzzle_identifiers, allow_pickle=False)
     np.save(save_dir / "all__puzzle_indices.npy", arrays.puzzle_indices, allow_pickle=False)
     np.save(save_dir / "all__group_indices.npy", arrays.group_indices, allow_pickle=False)
+    (save_dir / "row_metadata.json").write_text(
+        json.dumps(arrays.row_metadata, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     if arrays.skipped_examples:
         (save_dir / "skipped_examples.json").write_text(
             json.dumps(arrays.skipped_examples, indent=2, sort_keys=True),
@@ -285,31 +341,60 @@ def save_trm_dataset(arrays: TRMDatasetArrays, output_dir: Path, split: str = "t
     return save_dir
 
 
-def _edge_ids_to_node_path(
+def _edge_ids_to_ordered_node_path(
     gold_edge_ids: Sequence[str],
     edge_lookup: Mapping[str, KGEdge],
     missing_edge_ids: list[str],
 ) -> list[str]:
     node_path: list[str] = []
+    ordered_edges: list[KGEdge] = []
     for edge_id in gold_edge_ids:
-        edge = edge_lookup.get(str(edge_id).removeprefix("edge:").removeprefix("edge_id:"))
+        normalized_edge_id = str(edge_id).removeprefix("edge:").removeprefix("edge_id:")
+        edge = edge_lookup.get(normalized_edge_id)
         if edge is None:
             missing_edge_ids.append(str(edge_id))
             continue
+        ordered_edges.append(edge)
+
+    for edge_index, edge in enumerate(ordered_edges):
         if not node_path:
-            node_path.extend([edge.head, edge.tail])
+            node_path.extend(_orient_initial_edge(edge, ordered_edges[edge_index + 1] if edge_index + 1 < len(ordered_edges) else None))
             continue
         if node_path[-1] == edge.head:
-            node_path.append(edge.tail)
+            _append_if_not_repeated(node_path, edge.tail)
         elif node_path[-1] == edge.tail:
-            node_path.append(edge.head)
+            _append_if_not_repeated(node_path, edge.head)
         else:
-            node_path.extend([edge.head, edge.tail])
-    deduped_path: list[str] = []
-    for node_id in node_path:
-        if node_id not in deduped_path:
-            deduped_path.append(node_id)
-    return deduped_path
+            _append_if_not_repeated(node_path, edge.head)
+            _append_if_not_repeated(node_path, edge.tail)
+    return node_path
+
+
+def _orient_initial_edge(edge: KGEdge, next_edge: KGEdge | None) -> list[str]:
+    if next_edge is None:
+        return [edge.head, edge.tail]
+    next_nodes = {next_edge.head, next_edge.tail}
+    if edge.head in next_nodes and edge.tail not in next_nodes:
+        return [edge.tail, edge.head]
+    return [edge.head, edge.tail]
+
+
+def _append_if_not_repeated(node_path: list[str], node_id: str) -> None:
+    if not node_path or node_path[-1] != node_id:
+        node_path.append(node_id)
+
+
+def _node_tokens_by_id(inputs: torch.Tensor, node_mapping: Mapping[int, str]) -> dict[str, tuple[int, int]]:
+    token_by_node: dict[str, tuple[int, int]] = {}
+    for position, node_id in sorted(node_mapping.items()):
+        if not _is_gold_node_candidate(node_id):
+            continue
+        token_by_node.setdefault(node_id, (position, int(inputs[position].item())))
+    return token_by_node
+
+
+def _is_gold_node_candidate(node_id: str) -> bool:
+    return bool(node_id and node_id != "__pad__" and not node_id.startswith("PMID:"))
 
 
 def _coerce_inputs(value: Any, *, max_len: int) -> torch.Tensor:

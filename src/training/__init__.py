@@ -21,10 +21,16 @@ from src.training.medreason_adapter import (
     resolve_edge_mapper_config,
 )
 from src.training.seed_quality import (
+    DEFAULT_COVERAGE_TOP_K,
     DEFAULT_GOLDISH_BACKEND_PATTERNS,
+    DEFAULT_MIN_GOLDISH_GOLD_EDGE_COVERAGE,
+    DEFAULT_MIN_GOLDISH_GOLD_NODE_COVERAGE,
+    DEFAULT_MIN_GOLDISH_LABELED_TOKEN_RATIO,
+    SeedCoverageMetrics,
     SeedQualityDecision,
     SeedQualitySummary,
     classify_seed_record,
+    compute_seed_coverage,
     filter_seed_jsonl,
 )
 from src.training.trm_trainer import (
@@ -39,12 +45,17 @@ from src.training.trm_trainer import (
 
 __all__ = [
     "DEFAULT_MEDREASON_SOURCE",
+    "DEFAULT_COVERAGE_TOP_K",
     "DEFAULT_GOLDISH_BACKEND_PATTERNS",
+    "DEFAULT_MIN_GOLDISH_GOLD_EDGE_COVERAGE",
+    "DEFAULT_MIN_GOLDISH_GOLD_NODE_COVERAGE",
+    "DEFAULT_MIN_GOLDISH_LABELED_TOKEN_RATIO",
     "EdgeMappingDiagnostics",
     "EdgeSelection",
     "HF_MEDREASON_SOURCE",
     "MedReasonSeedResult",
     "RawMedReasonExample",
+    "SeedCoverageMetrics",
     "SeedQualityDecision",
     "SeedQualitySummary",
     "TRMArrayDataset",
@@ -54,6 +65,7 @@ __all__ = [
     "TRMTrainingExample",
     "build_trm_dataset_arrays",
     "classify_seed_record",
+    "compute_seed_coverage",
     "evaluate_reasoner",
     "filter_seed_jsonl",
     "heuristic_map_reasoning_to_edges",

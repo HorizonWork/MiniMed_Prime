@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from src.layers.layer3_trm import DEFAULT_HALT_LOSS_WEIGHT, TRMReasoner
-from src.models.trm_wrapper import DEFAULT_IGNORE_LABEL_ID, stablemax_cross_entropy
+from src.models.trm_wrapper import DEFAULT_IGNORE_LABEL_ID, move_nested_tensors_to_device, stablemax_cross_entropy
 from src.utils.kaggle_env import KaggleEnv
 from src.utils.structured_logger import DEFAULT_LOG_DIR, StructuredLogger
 
@@ -337,7 +337,9 @@ def _evaluate_batch(reasoner: TRMReasoner, batch: dict[str, torch.Tensor]) -> di
         "labels": labels,
         "puzzle_identifiers": puzzle_identifiers,
     }
-    carry = reasoner.model.initial_carry(train_batch)
+    with torch.device(reasoner.device):
+        carry = reasoner.model.initial_carry(train_batch)
+    carry = move_nested_tensors_to_device(carry, reasoner.device)
     final_outputs: dict[str, torch.Tensor] | None = None
     for _ in range(reasoner.max_steps):
         carry, outputs = reasoner.model(carry, train_batch)

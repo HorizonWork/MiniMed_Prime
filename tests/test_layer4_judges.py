@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from src.layers.layer4_judges import (
     AnswerFaithfulnessGuardian,
     EntityValidationResult,
     EntityValidator,
     EvidenceGroundingInspector,
     HallucinationJudge,
+    JudgeBase,
     ReasoningSoundnessAuditor,
+    _sanitize_payload_for_schema,
 )
 from src.schemas import EvidenceBundle, JudgeOutput, TRMOutput
 
@@ -222,3 +227,129 @@ def test_judge_base_prefers_openai_backend_when_api_key_and_remote_model(monkeyp
     validator = EntityValidator(model_name="gpt-4o-mini", device="cpu")
 
     assert validator.backend == "openai"
+
+
+def make_judge_payload(evidence_id: object, verdict: str = "supported") -> dict[str, object]:
+    return {
+        "claims": [
+            {
+                "text": "Ibuprofen increases bleeding risk with warfarin.",
+                "claim_type": "factual",
+                "verdict": verdict,
+                "evidence_id": evidence_id,
+                "severity": 0 if verdict == "supported" else 1,
+                "rationale": "Evidence was checked against the bundle.",
+            }
+        ],
+        "faithfulness_score": 0.9 if verdict == "supported" else 0.2,
+        "h5_present": False,
+        "overall_recommendation": "ACCEPT" if verdict == "supported" else "REVISE",
+        "abstention_reason": None,
+    }
+
+
+@pytest.mark.parametrize("evidence_id", ["edge:E1", "PMID:12345678", "none"])
+def test_judge_output_sanitizer_preserves_valid_evidence_ids(evidence_id: str) -> None:
+    sanitized, notes = _sanitize_payload_for_schema(JudgeOutput, make_judge_payload(evidence_id))
+
+    output = JudgeOutput.model_validate(sanitized)
+
+    assert output.claims[0].evidence_id == evidence_id
+    assert notes == []
+
+
+@pytest.mark.parametrize("evidence_id", ["N/A", "NA", "n/a", None, "null", "unknown", "not_applicable", ""])
+def test_judge_output_sanitizer_maps_none_aliases(evidence_id: object) -> None:
+    sanitized, notes = _sanitize_payload_for_schema(JudgeOutput, make_judge_payload(evidence_id))
+
+    output = JudgeOutput.model_validate(sanitized)
+
+    assert output.claims[0].evidence_id == "none"
+    assert notes
+
+
+@pytest.mark.parametrize(
+    ("raw_evidence_id", "normalized_evidence_id"),
+    [
+        (" pmid:12345678 ", "PMID:12345678"),
+        (" PMID:12345678 ", "PMID:12345678"),
+        (" EDGE:E1 ", "edge:E1"),
+        (" edge:E1 ", "edge:E1"),
+    ],
+)
+def test_judge_output_sanitizer_normalizes_prefix_case_and_whitespace(
+    raw_evidence_id: str,
+    normalized_evidence_id: str,
+) -> None:
+    sanitized, notes = _sanitize_payload_for_schema(JudgeOutput, make_judge_payload(raw_evidence_id))
+
+    output = JudgeOutput.model_validate(sanitized)
+
+    assert output.claims[0].evidence_id == normalized_evidence_id
+    assert notes
+
+
+@pytest.mark.parametrize("evidence_id", ["edgeE123", "PMID12345", "random text"])
+def test_judge_output_sanitizer_keeps_truly_invalid_supported_evidence_ids_invalid(evidence_id: str) -> None:
+    sanitized, notes = _sanitize_payload_for_schema(JudgeOutput, make_judge_payload(evidence_id))
+
+    assert sanitized["claims"][0]["evidence_id"] == evidence_id  # type: ignore[index]
+    assert notes == []
+    with pytest.raises(ValidationError):
+        JudgeOutput.model_validate(sanitized)
+
+
+@pytest.mark.parametrize("verdict", ["unsupported", "out_of_scope"])
+def test_judge_output_sanitizer_forces_ungrounded_claims_to_none(verdict: str) -> None:
+    sanitized, notes = _sanitize_payload_for_schema(JudgeOutput, make_judge_payload("edge:E1", verdict=verdict))
+
+    output = JudgeOutput.model_validate(sanitized)
+
+    assert output.claims[0].verdict == verdict
+    assert output.claims[0].evidence_id == "none"
+    assert any("forced to none" in note for note in notes)
+
+
+class StubStructuredJudge(JudgeBase):
+    def __init__(self, outputs: list[str]) -> None:
+        self.outputs = list(outputs)
+        super().__init__(model_name="stub-judge", system_prompt="Test judge.", device="cpu")
+        self.backend = "stub"
+
+    def evaluate(self, **kwargs: object) -> JudgeOutput:
+        return self._call_llm(prompt="Return JudgeOutput.", schema=JudgeOutput)
+
+    def _load_backend(self) -> None:
+        self.backend = "stub"
+
+    def _generate_structured_text(self, prompt: str) -> str:
+        del prompt
+        return self.outputs.pop(0)
+
+
+def test_judge_base_sanitizes_llm_output_before_validation() -> None:
+    judge = StubStructuredJudge(
+        [
+            """
+            {
+              "claims": [{
+                "text": "Aspirin cures pneumonia.",
+                "claim_type": "factual",
+                "verdict": "unsupported",
+                "evidence_id": "N/A",
+                "severity": 1,
+                "rationale": "No supplied evidence supports this."
+              }],
+              "faithfulness_score": 0.2,
+              "h5_present": false,
+              "overall_recommendation": "REVISE",
+              "abstention_reason": null
+            }
+            """
+        ]
+    )
+
+    output = judge.evaluate()
+
+    assert output.claims[0].evidence_id == "none"
+    assert judge.parse_success_rate == 1.0
