@@ -1092,6 +1092,7 @@ class PubMedRetriever:
         self._article_encoder = None
         self._cross_encoder = None
         self.last_extracted_triples: dict[str, list[tuple[str, str, str]]] = {}
+        self.last_retrieval_trace: dict[str, Any] = {}
         self.event_logger = StructuredLogger("layer1_retrieval", DEFAULT_LOG_DIR)
 
     @property
@@ -1108,6 +1109,14 @@ class PubMedRetriever:
         started_at = time.perf_counter()
         articles = self.client.search_and_fetch(query=query, retmax=self.config.search_candidate_count)
         if not articles:
+            self.last_retrieval_trace = {
+                "query": query,
+                "k_requested": int(k),
+                "k_returned": 0,
+                "candidate_count": 0,
+                "backend_used": self.backend_used,
+                "top_pmids": [],
+            }
             self.event_logger.log_event(
                 "pubmed_retrieved",
                 {
@@ -1134,9 +1143,21 @@ class PubMedRetriever:
         ranked_indices = np.argsort(-combined_scores)[:k]
         passages: list[PubMedPassage] = []
         self.last_extracted_triples = {}
+        top_trace_rows: list[dict[str, Any]] = []
         for index in ranked_indices:
             article = articles[int(index)]
             self.last_extracted_triples[article.pmid] = self._extract_candidate_triples(article.abstract)
+            top_trace_rows.append(
+                {
+                    "pmid": article.pmid,
+                    "title": article.title,
+                    "bm25_score": float(bm25_scores[int(index)]),
+                    "dense_score": float(dense_scores[int(index)]),
+                    "cross_encoder_score": float(cross_encoder_scores[int(index)]),
+                    "combined_score": float(combined_scores[int(index)]),
+                    "backend_used": self.backend_used,
+                }
+            )
             passages.append(
                 PubMedPassage(
                     pmid=article.pmid,
@@ -1145,6 +1166,19 @@ class PubMedRetriever:
                     relevance_score=float(combined_scores[int(index)]),
                 )
             )
+        self.last_retrieval_trace = {
+            "query": query,
+            "k_requested": int(k),
+            "k_returned": len(passages),
+            "candidate_count": len(articles),
+            "backend_used": self.backend_used,
+            "score_weights": {
+                "bm25": float(self.config.bm25_weight),
+                "dense": float(self.config.dense_weight),
+                "cross_encoder": float(self.config.cross_encoder_weight),
+            },
+            "top_pmids": top_trace_rows,
+        }
         self.event_logger.log_event(
             "pubmed_retrieved",
             {

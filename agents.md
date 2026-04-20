@@ -76,6 +76,10 @@ Copy-Item -LiteralPath (Join-Path $repo 'requirements-integration.txt') -Destina
 
 Compress-Archive -LiteralPath (Join-Path $repo 'src') -DestinationPath (Join-Path $upload 'src.zip') -Force
 Compress-Archive -LiteralPath (Join-Path $repo 'scripts') -DestinationPath (Join-Path $upload 'scripts.zip') -Force
+Compress-Archive -LiteralPath (Join-Path $repo 'tools') -DestinationPath (Join-Path $upload 'tools.zip') -Force
+Compress-Archive -LiteralPath (Join-Path $repo 'judges') -DestinationPath (Join-Path $upload 'judges.zip') -Force
+Compress-Archive -LiteralPath (Join-Path $repo 'prompts') -DestinationPath (Join-Path $upload 'prompts.zip') -Force
+Compress-Archive -LiteralPath (Join-Path $repo 'schemas') -DestinationPath (Join-Path $upload 'schemas.zip') -Force
 Compress-Archive -LiteralPath (Join-Path $repo 'tests') -DestinationPath (Join-Path $upload 'tests.zip') -Force
 Compress-Archive -LiteralPath (Join-Path $repo 'notebooks') -DestinationPath (Join-Path $upload 'notebooks.zip') -Force
 ```
@@ -90,6 +94,10 @@ base = Path(r'D:\CapstoneProjectSP26\kaggle_assets\minimed-prime-source-upload')
 checks = {
     'src.zip': ['src/models/trm_wrapper.py', 'src/layers/layer4_judges.py'],
     'scripts.zip': ['scripts/audit_checkpoint.py', 'scripts/test_trm_isolated.py'],
+    'tools.zip': ['tools/trace_one_sample.py'],
+    'judges.zip': ['judges/posthoc_auditor.py'],
+    'prompts.zip': ['prompts/posthoc_auditor_system.txt'],
+    'schemas.zip': ['schemas/posthoc_auditor_schema.py'],
     'tests.zip': ['tests/test_layer4_judges.py'],
 }
 for archive_name, probes in checks.items():
