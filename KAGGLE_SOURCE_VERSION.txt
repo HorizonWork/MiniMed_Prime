@@ -1,7 +1,7 @@
 MiniMed Prime Kaggle source package
-version: 2026-04-20-ticket-022-gold-path-coverage-gate
+version: 2026-04-20-ticket-023-enriched-skipped-seed-diagnostics
 notes:
-- Replaced copy-trivial TRM dataset labels with ordered gold-path token supervision
-- Added row-level label debug metadata and dataset build reject-rate reporting
-- Added seed-quality gold path coverage gate with configurable thresholds
-- Rejects zero-label goldish rows before train/val dataset export
+- Enriched MedReason skipped seed rows with question, backend, entity, edge, PubMed, and mapping diagnostics
+- Added skip_stage/skip_reason plus skip summary counts and skipped row averages
+- Preserved requested vs effective edge mapper backend when auto falls back
+- Added regression tests for diagnostic completeness on skipped seed artifacts

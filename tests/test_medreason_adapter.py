@@ -177,6 +177,112 @@ def test_prepare_medreason_seed_jsonl_writes_evidence_and_gold_edges(tmp_path: P
     assert payload["evidence"]["question_text"] == "Which H pylori antibiotic interacts with warfarin?"
 
 
+def test_prepare_medreason_seed_jsonl_skipped_rows_keep_required_diagnostics(tmp_path: Path) -> None:
+    source = tmp_path / "medreason.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "id": "skip-1",
+                "question": "Which antibiotic interacts with warfarin?",
+                "answer": "Unknown",
+                "reasoning": "The source cites a missing graph edge [edge:E_MISSING].",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "trm_seed.jsonl"
+
+    result = prepare_medreason_seed_jsonl(
+        source=source,
+        output_jsonl=output_path,
+        retriever=FakeRetriever(make_bundle()),  # type: ignore[arg-type]
+        split=None,
+        edge_mapper_backend="direct",
+    )
+
+    assert result.records_saved == 0
+    assert result.records_skipped == 1
+    assert result.skipped_path is not None
+    assert result.skip_stage_counts == {"edge_mapping": 1}
+    assert result.skip_reason_counts == {"no_gold_edges_mapped": 1}
+    assert result.skipped_avg_edge_count == 2.0
+    assert result.skipped_avg_entity_count == 1.0
+
+    skipped_row = json.loads(result.skipped_path.read_text(encoding="utf-8").strip())
+    required_fields = {
+        "question",
+        "question_type",
+        "backend_used",
+        "requested_backend",
+        "entity_count",
+        "linked_entities",
+        "edge_count",
+        "pubmed_count",
+        "mapped_edge_ids",
+        "missing_gold_edges",
+        "retrieval_backend_summary",
+        "skip_stage",
+        "skip_reason",
+    }
+    assert required_fields.issubset(skipped_row)
+    assert skipped_row["group_id"] == "skip-1"
+    assert skipped_row["question"] == "Which antibiotic interacts with warfarin?"
+    assert skipped_row["question_type"] == "drug_interaction"
+    assert skipped_row["backend_used"] == "direct"
+    assert skipped_row["requested_backend"] == "direct"
+    assert skipped_row["entity_count"] == 1
+    assert skipped_row["edge_count"] == 2
+    assert skipped_row["pubmed_count"] == 1
+    assert skipped_row["mapped_edge_ids"] == []
+    assert skipped_row["missing_gold_edges"] == ["E_MISSING"]
+    assert skipped_row["skip_stage"] == "edge_mapping"
+    assert skipped_row["skip_reason"] == "no_gold_edges_mapped"
+    assert skipped_row["reason"] == skipped_row["skip_reason"]
+    assert skipped_row["diagnostics"]["missing_direct_edge_ids"] == ["E_MISSING"]
+
+
+def test_prepare_medreason_seed_jsonl_skipped_rows_record_auto_backend_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    source = tmp_path / "medreason.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "id": "skip-auto",
+                "question": "Unrelated clinical note?",
+                "answer": "No match",
+                "reasoning": "No supplied reasoning edge can be grounded here.",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "trm_seed.jsonl"
+
+    result = prepare_medreason_seed_jsonl(
+        source=source,
+        output_jsonl=output_path,
+        retriever=FakeRetriever(make_bundle()),  # type: ignore[arg-type]
+        split=None,
+        edge_mapper_backend="auto",
+    )
+
+    assert result.records_saved == 0
+    assert result.records_skipped == 1
+    assert result.backend_used == "heuristic"
+    assert result.skipped_path is not None
+    skipped_row = json.loads(result.skipped_path.read_text(encoding="utf-8").strip())
+    assert skipped_row["requested_backend"] == "auto"
+    assert skipped_row["effective_backend"] == "heuristic"
+    assert skipped_row["backend_used"] == "heuristic"
+    assert skipped_row["skip_stage"] == "edge_mapping"
+    assert skipped_row["skip_reason"] == "no_gold_edges_mapped"
+
+
 def test_resolve_edge_mapper_auto_prefers_heuristic_without_llm(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)

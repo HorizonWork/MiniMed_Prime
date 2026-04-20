@@ -93,6 +93,10 @@ class MedReasonSeedResult:
     records_skipped: int
     backend_used: str
     latency_ms: float
+    skip_stage_counts: dict[str, int] = field(default_factory=dict)
+    skip_reason_counts: dict[str, int] = field(default_factory=dict)
+    skipped_avg_edge_count: float = 0.0
+    skipped_avg_entity_count: float = 0.0
 
     def to_json_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -200,9 +204,16 @@ def prepare_medreason_seed_jsonl(
         for record_index, record in enumerate(records):
             if max_saved is not None and records_saved >= max_saved:
                 break
+            example: RawMedReasonExample | None = None
+            evidence: EvidenceBundle | None = None
+            diagnostics: EdgeMappingDiagnostics | None = None
+            skip_stage = "export"
             try:
+                skip_stage = "export"
                 example = normalize_medreason_record(record, index=record_index)
+                skip_stage = "retrieval"
                 evidence = retriever.retrieve(example.question)
+                skip_stage = "edge_mapping"
                 edge_ids, diagnostics = map_medreason_edges(
                     example=example,
                     evidence=evidence,
@@ -210,22 +221,22 @@ def prepare_medreason_seed_jsonl(
                     selector=selector,
                 )
                 if not edge_ids and not allow_empty_gold:
-                    skipped_rows.append(
-                        {
-                            "index": record_index,
-                            "group_id": example.group_id,
-                            "reason": "no_gold_edges_mapped",
-                            "diagnostics": asdict(diagnostics),
-                        }
+                    skipped_row = _build_skipped_seed_row(
+                        index=record_index,
+                        raw_record=record,
+                        example=example,
+                        evidence=evidence,
+                        diagnostics=diagnostics,
+                        skip_stage=_infer_no_gold_skip_stage(evidence),
+                        skip_reason="no_gold_edges_mapped",
+                        requested_backend=edge_mapper_backend,
+                        effective_backend=effective_backend,
                     )
+                    skipped_rows.append(skipped_row)
                     logger.log_event(
                         "medreason_record_skipped",
                         {
-                            "index": record_index,
-                            "group_id": example.group_id,
-                            "reason": "no_gold_edges_mapped",
-                            "backend_used": diagnostics.backend_used,
-                            "requested_backend": edge_mapper_backend,
+                            **_loggable_skip_payload(skipped_row),
                             "latency_ms": 0.0,
                         },
                     )
@@ -258,11 +269,27 @@ def prepare_medreason_seed_jsonl(
                     },
                 )
             except Exception as exc:
-                skipped_rows.append({"index": record_index, "reason": type(exc).__name__, "message": str(exc)})
+                skipped_row = _build_skipped_seed_row(
+                    index=record_index,
+                    raw_record=record,
+                    example=example,
+                    evidence=evidence,
+                    diagnostics=diagnostics,
+                    skip_stage=skip_stage,
+                    skip_reason=type(exc).__name__,
+                    requested_backend=edge_mapper_backend,
+                    effective_backend=effective_backend,
+                    message=str(exc),
+                )
+                skipped_rows.append(skipped_row)
                 logger.log_exception(
                     "medreason_record_failed",
                     exc,
-                    {"index": record_index, "backend_used": effective_backend, "latency_ms": 0.0},
+                    {
+                        **_loggable_skip_payload(skipped_row),
+                        "backend_used": skipped_row["backend_used"],
+                        "latency_ms": 0.0,
+                    },
                 )
 
     if skipped_rows:
@@ -273,6 +300,7 @@ def prepare_medreason_seed_jsonl(
     else:
         skipped_path = None
 
+    skip_summary = _summarize_skipped_rows(skipped_rows)
     result = MedReasonSeedResult(
         output_path=output_path,
         skipped_path=skipped_path,
@@ -281,6 +309,10 @@ def prepare_medreason_seed_jsonl(
         records_skipped=len(skipped_rows),
         backend_used=effective_backend,
         latency_ms=(time.perf_counter() - started_at) * 1000.0,
+        skip_stage_counts=skip_summary["skip_stage_counts"],
+        skip_reason_counts=skip_summary["skip_reason_counts"],
+        skipped_avg_edge_count=skip_summary["skipped_avg_edge_count"],
+        skipped_avg_entity_count=skip_summary["skipped_avg_entity_count"],
     )
     logger.log_event(
         "medreason_seed_saved",
@@ -547,6 +579,151 @@ def _load_records_file(path: Path, *, split: str | None) -> list[dict[str, Any]]
         frame = pd.read_parquet(path)
         return [dict(record) for record in frame.to_dict(orient="records")]
     raise ValueError(f"Unsupported MedReason file extension: {path.suffix}")
+
+
+def _build_skipped_seed_row(
+    *,
+    index: int,
+    raw_record: Mapping[str, Any],
+    example: RawMedReasonExample | None,
+    evidence: EvidenceBundle | None,
+    diagnostics: EdgeMappingDiagnostics | None,
+    skip_stage: str,
+    skip_reason: str,
+    requested_backend: str,
+    effective_backend: str,
+    message: str | None = None,
+) -> dict[str, Any]:
+    evidence_metadata = evidence.metadata if evidence is not None else {}
+    linked_entities = [
+        entity.model_dump(mode="json") if hasattr(entity, "model_dump") else dict(entity)
+        for entity in (evidence.question_entities if evidence is not None else [])
+    ]
+    edge_mapping_payload = asdict(diagnostics) if diagnostics is not None else {}
+    mapped_edge_ids = list(edge_mapping_payload.get("selected_edge_ids") or [])
+    missing_gold_edges = list(
+        edge_mapping_payload.get("missing_direct_edge_ids")
+        or edge_mapping_payload.get("missing_gold_edges")
+        or []
+    )
+    backend_used = str(edge_mapping_payload.get("backend_used") or effective_backend)
+    question = example.question if example is not None else _first_text(raw_record, QUESTION_KEYS)
+    group_id = example.group_id if example is not None else str(
+        raw_record.get("id")
+        or raw_record.get("question_id")
+        or raw_record.get("uid")
+        or raw_record.get("sample_id")
+        or index
+    )
+
+    row: dict[str, Any] = {
+        "index": index,
+        "group_id": group_id,
+        "question": question,
+        "question_type": evidence.question_type if evidence is not None else _infer_question_type_from_text(question),
+        "backend_used": backend_used,
+        "requested_backend": requested_backend,
+        "effective_backend": effective_backend,
+        "entity_count": len(linked_entities),
+        "linked_entities": linked_entities,
+        "edge_count": len(evidence.subgraph_edges) if evidence is not None else 0,
+        "pubmed_count": len(evidence.pubmed_passages) if evidence is not None else 0,
+        "mapped_edge_ids": mapped_edge_ids,
+        "missing_gold_edges": missing_gold_edges,
+        "retrieval_backend_summary": _retrieval_backend_summary(evidence),
+        "skip_stage": skip_stage,
+        "skip_reason": skip_reason,
+        "reason": skip_reason,
+        "diagnostics": edge_mapping_payload,
+    }
+    if example is not None:
+        row["answer"] = example.answer
+        row["direct_edge_ids"] = list(example.direct_edge_ids)
+    if message:
+        row["message"] = message
+    return row
+
+
+def _infer_no_gold_skip_stage(evidence: EvidenceBundle) -> str:
+    if not evidence.question_entities:
+        return "entity_linking"
+    if not evidence.subgraph_edges:
+        return "retrieval"
+    return "edge_mapping"
+
+
+def _retrieval_backend_summary(evidence: EvidenceBundle | None) -> dict[str, Any]:
+    if evidence is None:
+        return {}
+    backend_used = evidence.metadata.get("backend_used")
+    backend_mapping = backend_used if isinstance(backend_used, Mapping) else {}
+    return {
+        "entity_linker_backend": evidence.metadata.get("entity_linker_backend") or backend_mapping.get("entity_linker"),
+        "primekg_backend": evidence.metadata.get("primekg_backend") or backend_mapping.get("primekg"),
+        "pubmed_backend": evidence.metadata.get("pubmed_backend") or backend_mapping.get("pubmed"),
+        "layer1_backend": dict(backend_mapping) if isinstance(backend_used, Mapping) else backend_used,
+        "question_type": evidence.metadata.get("question_type") or evidence.question_type,
+    }
+
+
+def _loggable_skip_payload(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "index": row.get("index"),
+        "group_id": row.get("group_id"),
+        "skip_stage": row.get("skip_stage"),
+        "skip_reason": row.get("skip_reason"),
+        "reason": row.get("skip_reason"),
+        "backend_used": row.get("backend_used"),
+        "requested_backend": row.get("requested_backend"),
+        "effective_backend": row.get("effective_backend"),
+        "question_type": row.get("question_type"),
+        "entity_count": row.get("entity_count"),
+        "edge_count": row.get("edge_count"),
+        "pubmed_count": row.get("pubmed_count"),
+        "mapped_edge_count": len(_list_or_empty(row.get("mapped_edge_ids"))),
+        "missing_gold_edge_count": len(_list_or_empty(row.get("missing_gold_edges"))),
+    }
+
+
+def _summarize_skipped_rows(skipped_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    stage_counts: dict[str, int] = {}
+    reason_counts: dict[str, int] = {}
+    edge_counts: list[int] = []
+    entity_counts: list[int] = []
+    for row in skipped_rows:
+        stage = str(row.get("skip_stage") or "unknown")
+        reason = str(row.get("skip_reason") or row.get("reason") or "unknown")
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        edge_counts.append(int(row.get("edge_count") or 0))
+        entity_counts.append(int(row.get("entity_count") or 0))
+    return {
+        "skip_stage_counts": stage_counts,
+        "skip_reason_counts": reason_counts,
+        "skipped_avg_edge_count": _mean_ints(edge_counts),
+        "skipped_avg_entity_count": _mean_ints(entity_counts),
+    }
+
+
+def _infer_question_type_from_text(question: str) -> str:
+    normalized = question.lower()
+    if any(term in normalized for term in ("interaction", "interact", "contraindicated", "combine", "co-administer", "coadminister")):
+        return "drug_interaction"
+    if any(term in normalized for term in ("dose", "dosage", "mg", "mcg", "titrate")):
+        return "dosage"
+    if any(term in normalized for term in ("diagnosis", "diagnose", "differential", "most likely")):
+        return "diagnosis"
+    if any(term in normalized for term in ("cause", "causes", "etiology", "mechanism")):
+        return "etiology"
+    return "other"
+
+
+def _list_or_empty(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) else []
+
+
+def _mean_ints(values: Sequence[int]) -> float:
+    return float(sum(values) / len(values)) if values else 0.0
 
 
 def _load_hf_records(source: str, *, split: str | None) -> list[dict[str, Any]]:
