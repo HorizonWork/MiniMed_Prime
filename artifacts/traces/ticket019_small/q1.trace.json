@@ -1,0 +1,337 @@
+{
+  "artifacts": {
+    "pubmed_json": "artifacts\\traces\\ticket019_small\\q1.pubmed.json",
+    "subgraph_json": "artifacts\\traces\\ticket019_small\\q1.subgraph.json",
+    "summary_md": "artifacts\\traces\\ticket019_small\\q1.summary.md",
+    "trace_json": "artifacts\\traces\\ticket019_small\\q1.trace.json"
+  },
+  "config": {
+    "coverage_top_k": 256,
+    "device": "cpu",
+    "edge_mapper_backend": "direct",
+    "llm_device": "cpu",
+    "llm_model_name": "heuristic",
+    "max_len": 256,
+    "output_dir": "artifacts\\traces\\ticket019_small",
+    "posthoc_audit_device": "cpu",
+    "posthoc_audit_mode": "answer_only",
+    "posthoc_audit_model": "heuristic",
+    "primekg_path": "data\\tmp_primekg_ticket019.csv",
+    "pubmed_api_key": null,
+    "pubmed_cache_path": "data\\pubmed_cache.jsonl",
+    "question_id": null,
+    "random_one": false,
+    "relation_filter": [],
+    "relation_filter_overrides": {},
+    "run_posthoc_audit": false,
+    "sample_index": 0,
+    "save_subgraph_html": false,
+    "seed": 0,
+    "source": "data/tmp_relation_filter_benchmark.jsonl",
+    "split": null,
+    "top_edges": 25,
+    "use_relation_filter": true
+  },
+  "created_at": "2026-04-20T18:18:56.423760+00:00",
+  "entity_extraction": {
+    "backend_used": "rule_based",
+    "duration_ms": 1.7259999999623687,
+    "entities": [
+      {
+        "backend": "rule_based",
+        "confidence": 1.0,
+        "cui": "C0020740",
+        "entity_type": "drug",
+        "primekg_node_id": "drug:ibuprofen",
+        "surface": "ibuprofen"
+      },
+      {
+        "backend": "rule_based",
+        "confidence": 1.0,
+        "cui": "C0043031",
+        "entity_type": "drug",
+        "primekg_node_id": "drug:warfarin",
+        "surface": "warfarin"
+      },
+      {
+        "backend": "rule_based",
+        "confidence": 1.0,
+        "cui": "C0004238",
+        "entity_type": "disease",
+        "primekg_node_id": null,
+        "surface": "atrial fibrillation"
+      }
+    ],
+    "entity_count": 3,
+    "error_message": null,
+    "missing_critical_entities": [
+      "atrial fibrillation"
+    ],
+    "missing_entities": [
+      "atrial fibrillation"
+    ],
+    "status": "warn"
+  },
+  "final_trace_verdict": {
+    "duration_ms": 0.05020000003241876,
+    "error_message": null,
+    "failed_stage": null,
+    "next_debug_hint": "Trace is usable; inspect warn stages for downgraded quality.",
+    "posthoc_recommendation": null,
+    "posthoc_sample_label": null,
+    "reasons": [
+      "entity_linker_backend:rule_based"
+    ],
+    "status": "partial"
+  },
+  "gold_answer": "Yes",
+  "gold_mapping": {
+    "backend_used": "direct",
+    "duration_ms": 0.04639999997380073,
+    "edge_coverage": 1.0,
+    "effective_backend": "direct",
+    "error_message": null,
+    "fallback_chain": [
+      "direct"
+    ],
+    "gold_edge_ids": [
+      "E_DRUG"
+    ],
+    "heuristic_edge_ids": [],
+    "llm_rationale": "",
+    "mapped_edge_ids": [
+      "E_DRUG"
+    ],
+    "missing_gold_edge_ids": [],
+    "missing_gold_edges": [],
+    "requested_backend": "direct",
+    "status": "ok"
+  },
+  "gold_reasoning": "Possible interaction via [edge:E_DRUG].",
+  "primekg_retrieval": {
+    "backend_used": "networkx_csv",
+    "candidate_edges": 2,
+    "candidate_nodes": 3,
+    "duration_ms": 215.5361999998604,
+    "error_message": null,
+    "hop1_edges": 2,
+    "hop1_nodes": 3,
+    "hop2_edges": 0,
+    "hop2_nodes": 0,
+    "ppr_topk": 200,
+    "primekg_loaded": true,
+    "relation_filter_active": true,
+    "relation_filter_matched": [
+      "contraindication",
+      "drug_drug",
+      "drug_effect"
+    ],
+    "relation_filter_requested": [
+      "contraindication",
+      "drug_drug",
+      "drug_effect",
+      "drug_protein",
+      "drugdrug",
+      "indication",
+      "off-label use"
+    ],
+    "relation_filter_stats": {
+      "canonical_question_type": "drug_interaction",
+      "edges_after": 2,
+      "edges_before": 2,
+      "fallback_stage": "none",
+      "fallback_stage_used": "none",
+      "matched_relations": [
+        "contraindication",
+        "drug_drug",
+        "drug_effect"
+      ],
+      "node_count_after": 3,
+      "override_source": "question_type_default",
+      "question_type": "drug_interaction",
+      "question_type_used": "drug_interaction",
+      "requested_but_missing_relations": [
+        "drug_protein",
+        "indication",
+        "off-label use"
+      ],
+      "requested_relations": [
+        "contraindication",
+        "drug_drug",
+        "drug_effect",
+        "drug_protein",
+        "drugdrug",
+        "indication",
+        "off-label use"
+      ],
+      "use_relation_filter": true
+    },
+    "retrieved_edges": 2,
+    "retrieved_nodes": 3,
+    "seed_node_ids": [
+      "drug:ibuprofen",
+      "drug:warfarin"
+    ],
+    "status": "ok",
+    "top_edges": [
+      {
+        "amg_confidence": 1.0,
+        "display_relation": "drug interaction",
+        "edge_id": "E_DRUG",
+        "head": "drug:warfarin",
+        "relation": "drug_drug",
+        "source_reliability": 0.95,
+        "supporting_pmids": [
+          "12345678"
+        ],
+        "tail": "drug:ibuprofen"
+      },
+      {
+        "amg_confidence": 1.0,
+        "display_relation": "contraindication",
+        "edge_id": "E_CD",
+        "head": "drug:warfarin",
+        "relation": "contraindication",
+        "source_reliability": 0.94,
+        "supporting_pmids": [
+          "12345678"
+        ],
+        "tail": "disease:bleeding"
+      }
+    ]
+  },
+  "pubmed_retrieval": {
+    "backend_used": "bm25_only",
+    "candidate_count": 0,
+    "duration_ms": 1.3477999998485757,
+    "error_message": null,
+    "passages": [],
+    "queries": [
+      "Is ibuprofen contraindicated with warfarin in atrial fibrillation?"
+    ],
+    "query_used": "Is ibuprofen contraindicated with warfarin in atrial fibrillation?",
+    "score_weights": {},
+    "status": "warn",
+    "top_pmids": []
+  },
+  "question": "Is ibuprofen contraindicated with warfarin in atrial fibrillation?",
+  "question_type": {
+    "backend": "shared_inference",
+    "confidence": null,
+    "duration_ms": 0.10369999995418766,
+    "error_message": null,
+    "heuristic_path": [
+      "contraindicated"
+    ],
+    "notes": [],
+    "predicted": "drug_interaction",
+    "status": "ok"
+  },
+  "record_index": 0,
+  "sample_id": "q1",
+  "sample_load": {
+    "duration_ms": 1.1431000000357017,
+    "error_message": null,
+    "gold_answer": "Yes",
+    "gold_reasoning": "Possible interaction via [edge:E_DRUG].",
+    "group_id": "q1",
+    "options": null,
+    "question": "Is ibuprofen contraindicated with warfarin in atrial fibrillation?",
+    "record_count": 12,
+    "record_index": 0,
+    "sample_metadata": {},
+    "source": "data/tmp_relation_filter_benchmark.jsonl",
+    "split": null,
+    "status": "ok"
+  },
+  "schema_version": 1,
+  "seed_quality": {
+    "accepted": true,
+    "coverage": {
+      "coverage_top_k": 256,
+      "covered_gold_edge_count": 1,
+      "covered_gold_node_count": 2,
+      "expected_gold_edge_count": 1,
+      "expected_gold_node_count": 2,
+      "gold_edge_coverage": 1.0,
+      "gold_node_coverage": 1.0,
+      "labeled_gold_nodes": [
+        "drug:warfarin",
+        "drug:ibuprofen"
+      ],
+      "labeled_token_count": 2,
+      "labeled_token_ratio": 1.0,
+      "missing_gold_edges": [],
+      "missing_gold_nodes": [],
+      "ppr_pruned_gold_nodes": []
+    },
+    "duration_ms": 2.3809000001620007,
+    "edge_mapper_backend": "direct",
+    "entity_linker_backend": "rule_based",
+    "error_message": null,
+    "gold_edge_coverage": 1.0,
+    "gold_node_coverage": 1.0,
+    "labeled_token_count": 2,
+    "labeled_token_ratio": 1.0,
+    "primekg_backend": "networkx_csv",
+    "reasons": [
+      "entity_linker_backend:rule_based"
+    ],
+    "status": "ok",
+    "tier": "silver",
+    "train_val_export": "silver",
+    "warnings": [
+      "entity_linker_backend:rule_based"
+    ]
+  },
+  "stage_order": [
+    "sample_load",
+    "question_type",
+    "entity_extraction",
+    "primekg_retrieval",
+    "pubmed_retrieval",
+    "gold_mapping",
+    "tensorization_preview",
+    "seed_quality",
+    "posthoc_audit",
+    "final_trace_verdict"
+  ],
+  "tensorization_preview": {
+    "checkpoint_used": {
+      "backend_used": {
+        "graph_encoder": "sapbert_hgt",
+        "layer2_backend": "sapbert_real",
+        "node_text_encoder": "hf_local",
+        "passage_text_encoder": "unused",
+        "vector_quantizer": "deterministic_vq:4096"
+      },
+      "layer2_backend": "sapbert_real"
+    },
+    "codebook_version": "deterministic_vq:4096",
+    "duration_ms": 5421.43759999999,
+    "error_message": null,
+    "gold_path_len": 1,
+    "inputs_shape": [
+      1,
+      256
+    ],
+    "label_mode": "ordered_node_token_sequence",
+    "labeled_token_count": 2,
+    "labels_shape": [
+      1,
+      256
+    ],
+    "missing_gold_edges": [],
+    "missing_gold_nodes": [],
+    "nonpad_input_tokens": 4,
+    "nonpad_label_tokens": 2,
+    "puzzle_identifier": 0,
+    "status": "ok",
+    "token_type_counts": {
+      "node": 4,
+      "other": 0,
+      "pad": 252,
+      "passage": 0
+    }
+  }
+}

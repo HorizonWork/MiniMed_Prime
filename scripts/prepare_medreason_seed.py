@@ -16,6 +16,19 @@ from src.training import DEFAULT_MEDREASON_SOURCE, prepare_medreason_seed_jsonl
 from src.utils.kaggle_env import KaggleEnv, T4Hardening
 
 
+def _parse_relation_filter_overrides(values: list[str]) -> dict[str, set[str]] | None:
+    overrides: dict[str, set[str]] = {}
+    for raw_value in values:
+        question_type, separator, relations = raw_value.partition("=")
+        if not separator:
+            raise ValueError(f"Invalid --relation-filter-override value: {raw_value!r}")
+        parsed_relations = {relation.strip() for relation in relations.split(",") if relation.strip()}
+        if not question_type.strip() or not parsed_relations:
+            raise ValueError(f"Invalid --relation-filter-override value: {raw_value!r}")
+        overrides[question_type.strip()] = parsed_relations
+    return overrides or None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare TRM seed JSONL from raw MedReason records.")
     parser.add_argument("--source", default=DEFAULT_MEDREASON_SOURCE, help="HF dataset name or local MedReason file/dir.")
@@ -35,6 +48,13 @@ def main() -> int:
     parser.add_argument("--pubmed-cache-path", type=Path, default=Path("data/pubmed_cache.jsonl"))
     parser.add_argument("--pubmed-api-key", default=None)
     parser.add_argument("--relation-filter", default=None, help="Comma-separated PrimeKG relations to keep.")
+    parser.add_argument("--disable-relation-filter", action="store_true", help="Disable question-type-aware relation filtering.")
+    parser.add_argument(
+        "--relation-filter-override",
+        action="append",
+        default=[],
+        help="Repeatable question_type=rel1,rel2 override that replaces the routed relation set for one question type.",
+    )
     parser.add_argument("--kaggle", action="store_true", help="Enable Kaggle path and T4 memory handling.")
     args = parser.parse_args()
 
@@ -47,11 +67,14 @@ def main() -> int:
         if args.relation_filter
         else None
     )
+    relation_filter_overrides = _parse_relation_filter_overrides(args.relation_filter_override)
     retriever = AgenticRetriever(
         primekg_path=KaggleEnv.path(args.primekg_path),
         pubmed_api_key=args.pubmed_api_key,
         pubmed_cache_path=KaggleEnv.ensure_writeable(KaggleEnv.path(args.pubmed_cache_path)),
+        use_relation_filter=not args.disable_relation_filter,
         relation_filter=relation_filter,
+        relation_filter_overrides=relation_filter_overrides,
     )
     result = prepare_medreason_seed_jsonl(
         source=args.source,

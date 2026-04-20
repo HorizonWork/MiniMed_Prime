@@ -19,7 +19,8 @@ class FakeRetriever:
         self.bundle = bundle
         self.questions: list[str] = []
 
-    def retrieve(self, question: str) -> EvidenceBundle:
+    def retrieve(self, question: str, question_type_hint: str | None = None) -> EvidenceBundle:
+        del question_type_hint
         self.questions.append(question)
         return self.bundle
 

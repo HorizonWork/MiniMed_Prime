@@ -9,6 +9,8 @@ param(
     [string]$LlmModelName = "",
     [string]$LlmDevice = "cpu",
     [string]$RelationFilter = "",
+    [string[]]$RelationFilterOverride = @(),
+    [switch]$DisableRelationFilter,
     [switch]$AllowEmptyGold,
     [switch]$BuildTrmArrays,
     [switch]$RunSystemSmoke,
@@ -85,6 +87,14 @@ function Invoke-SeedPreparation {
     if (-not [string]::IsNullOrWhiteSpace($RelationFilter)) {
         $command += @("--relation-filter", $RelationFilter)
     }
+    if ($DisableRelationFilter) {
+        $command += "--disable-relation-filter"
+    }
+    foreach ($override in $RelationFilterOverride) {
+        if (-not [string]::IsNullOrWhiteSpace($override)) {
+            $command += @("--relation-filter-override", $override)
+        }
+    }
     if ($AllowEmptyGold) {
         $command += "--allow-empty-gold"
     }
@@ -141,6 +151,7 @@ Write-Host "Profile: $Profile"
 Write-Host "Source: $Source"
 Write-Host "Edge mapper: $EdgeMapper"
 Write-Host "LLM model: $LlmModelName"
+Write-Host "Relation filter enabled: $(-not $DisableRelationFilter)"
 Write-Host "Output root: $outputRoot"
 
 if ($RunSystemSmoke) {

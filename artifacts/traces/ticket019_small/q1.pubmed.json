@@ -1,0 +1,11 @@
+{
+  "backend_used": "bm25_only",
+  "passages": [],
+  "queries": [
+    "Is ibuprofen contraindicated with warfarin in atrial fibrillation?"
+  ],
+  "question": "Is ibuprofen contraindicated with warfarin in atrial fibrillation?",
+  "sample_id": "q1",
+  "score_weights": {},
+  "top_pmids": []
+}

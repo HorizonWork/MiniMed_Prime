@@ -139,14 +139,17 @@ class StubRetriever:
         self.bundle = bundle
         self.raise_timeout = raise_timeout
         self.config = SimpleNamespace(
+            use_relation_filter=True,
             relation_filter=None,
+            relation_filter_overrides=None,
             primekg_top_k=200,
             pubmed_cache_path=Path("data/pubmed_cache.jsonl"),
         )
         self.linker = SimpleNamespace(link=lambda question: list(self.bundle.question_entities))
         self.kg_extractor = SimpleNamespace(
+            last_relation_filter_stats={},
             resolve_seed_entities=lambda entities: list(entities),
-            extract_2hop=lambda seed_entities, top_k, relation_filter: list(self.bundle.subgraph_edges),
+            extract_2hop=lambda **kwargs: list(self.bundle.subgraph_edges),
         )
         cached_articles = [
             SimpleNamespace(pmid=passage.pmid, title=passage.title, abstract=passage.abstract)

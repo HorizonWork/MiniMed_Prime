@@ -34,7 +34,20 @@ def write_sample_primekg_csv(path: Path) -> None:
                 "drug:warfarin,warfarin,drug,disease:af,atrial fibrillation,disease,indication,indication,drugbank,23456789",
                 "drug:warfarin,warfarin,drug,drug:ibuprofen,ibuprofen,drug,drug_drug,drug interaction,drugbank,12345678",
                 "drug:ibuprofen,ibuprofen,drug,disease:bleeding,bleeding,disease,contraindication,contraindication,drugcentral,12345678",
+                "drug:warfarin,warfarin,drug,effect:bleeding_risk,bleeding risk,effect,drug_effect,drug effect,drugcentral,12345678",
                 "disease:af,atrial fibrillation,disease,disease:stroke,stroke,disease,disease_disease,associated disease,primekg,23456789",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_protein_only_primekg_csv(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "x_id,x_name,x_type,y_id,y_name,y_type,relation,display_relation,source,supporting_pmids",
+                "protein:ace2,ACE2,protein,protein:tmprss2,TMPRSS2,protein,protein_protein,ppi,primekg,12345678",
             ]
         ),
         encoding="utf-8",
@@ -98,6 +111,50 @@ def test_primekg_extractor_extracts_ranked_two_hop_edges(tmp_path: Path) -> None
     assert edge_ids
     assert "drug_drug" in relations
     assert relations.issubset({"drug_drug", "contraindication"})
+
+
+def test_primekg_extractor_compact_fallback_when_routed_filter_empty(tmp_path: Path) -> None:
+    primekg_path = tmp_path / "primekg_sample.csv"
+    write_sample_primekg_csv(primekg_path)
+    extractor = PrimeKGExtractor(primekg_path=primekg_path)
+    seed_entities = [
+        QuestionEntity(surface="warfarin", cui="C0043031", primekg_node_id=None, entity_type="drug"),
+    ]
+
+    edges = extractor.extract_2hop(seed_entities=seed_entities, top_k=10, question_type="etiology", use_relation_filter=True)
+
+    assert edges
+    assert extractor.last_relation_filter_stats["fallback_stage"] == "compact_fallback"
+    assert extractor.last_relation_filter_stats["edges_before"] >= extractor.last_relation_filter_stats["edges_after"]
+    assert "disease_disease" in {edge.relation for edge in edges}
+
+
+def test_primekg_extractor_falls_back_to_original_behavior_if_compact_still_empty(tmp_path: Path) -> None:
+    primekg_path = tmp_path / "primekg_protein_only.csv"
+    write_protein_only_primekg_csv(primekg_path)
+    extractor = PrimeKGExtractor(primekg_path=primekg_path)
+    seed_entities = [
+        QuestionEntity(surface="ACE2", cui=None, primekg_node_id=None, entity_type="protein"),
+    ]
+
+    edges = extractor.extract_2hop(seed_entities=seed_entities, top_k=10, question_type="diagnosis", use_relation_filter=True)
+
+    assert edges
+    assert {edge.relation for edge in edges} == {"protein_protein"}
+    assert extractor.last_relation_filter_stats["fallback_stage"] == "original_behavior"
+
+
+def test_primekg_extractor_dosage_route_keeps_drug_effect(tmp_path: Path) -> None:
+    primekg_path = tmp_path / "primekg_sample.csv"
+    write_sample_primekg_csv(primekg_path)
+    extractor = PrimeKGExtractor(primekg_path=primekg_path)
+    seed_entities = [
+        QuestionEntity(surface="warfarin", cui="C0043031", primekg_node_id=None, entity_type="drug"),
+    ]
+
+    edges = extractor.extract_2hop(seed_entities=seed_entities, top_k=10, question_type="dosage", use_relation_filter=True)
+
+    assert "drug_effect" in {edge.relation for edge in edges}
 
 
 def test_primekg_extractor_prefers_kg_csv_over_feature_tables(tmp_path: Path) -> None:
@@ -175,3 +232,9 @@ def test_agentic_retriever_builds_evidence_bundle(tmp_path: Path) -> None:
     assert bundle.metadata["question_type"] == "drug_interaction"
     assert bundle.metadata["entity_linker_backend"] == "rule_based"
     assert bundle.metadata["pubmed_backend"] == "bm25_only"
+    relation_filter_stats = bundle.metadata["relation_filter"]
+    assert relation_filter_stats["question_type_used"] == "drug_interaction"
+    assert "requested_relations" in relation_filter_stats
+    assert "matched_relations" in relation_filter_stats
+    assert "edges_before" in relation_filter_stats
+    assert "edges_after" in relation_filter_stats

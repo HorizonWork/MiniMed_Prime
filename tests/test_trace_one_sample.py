@@ -108,6 +108,12 @@ def test_trace_one_sample_runs_three_question_types_and_writes_artifacts(tmp_pat
     assert all(Path(trace["artifacts"]["subgraph_json"]).exists() for trace in traces)
     assert all(Path(trace["artifacts"]["pubmed_json"]).exists() for trace in traces)
     assert "bm25_score" in traces[0]["pubmed_retrieval"]["top_pmids"][0]
+    relation_stats = traces[0]["primekg_retrieval"]["relation_filter_stats"]
+    assert "requested_relations" in relation_stats
+    assert "matched_relations" in relation_stats
+    assert "edges_before" in relation_stats
+    assert "edges_after" in relation_stats
+    assert "fallback_stage_used" in relation_stats
 
 
 def test_trace_one_sample_rejects_missing_gold_edges_with_debug_summary(tmp_path: Path) -> None:

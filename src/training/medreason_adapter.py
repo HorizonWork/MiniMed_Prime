@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from pydantic import BaseModel, Field
 
 from src.layers.layer1_retrieval import AgenticRetriever
+from src.retrieval import infer_question_type
 from src.layers.layer4_judges import JudgeBase
 from src.schemas import EvidenceBundle, KGEdge
 from src.training.trm_dataset_builder import parse_reasoning_chain
@@ -211,8 +212,9 @@ def prepare_medreason_seed_jsonl(
             try:
                 skip_stage = "export"
                 example = normalize_medreason_record(record, index=record_index)
+                question_type_hint = _question_type_hint_from_record(record, question=example.question)
                 skip_stage = "retrieval"
-                evidence = retriever.retrieve(example.question)
+                evidence = retriever.retrieve(example.question, question_type_hint=question_type_hint)
                 skip_stage = "edge_mapping"
                 edge_ids, diagnostics = map_medreason_edges(
                     example=example,
@@ -620,7 +622,11 @@ def _build_skipped_seed_row(
         "index": index,
         "group_id": group_id,
         "question": question,
-        "question_type": evidence.question_type if evidence is not None else _infer_question_type_from_text(question),
+        "question_type": (
+            evidence.question_type
+            if evidence is not None
+            else infer_question_type(record=raw_record, question=question, fallback_label="other")
+        ),
         "backend_used": backend_used,
         "requested_backend": requested_backend,
         "effective_backend": effective_backend,
@@ -663,6 +669,7 @@ def _retrieval_backend_summary(evidence: EvidenceBundle | None) -> dict[str, Any
         "pubmed_backend": evidence.metadata.get("pubmed_backend") or backend_mapping.get("pubmed"),
         "layer1_backend": dict(backend_mapping) if isinstance(backend_used, Mapping) else backend_used,
         "question_type": evidence.metadata.get("question_type") or evidence.question_type,
+        "relation_filter": evidence.metadata.get("relation_filter"),
     }
 
 
@@ -705,17 +712,12 @@ def _summarize_skipped_rows(skipped_rows: Sequence[Mapping[str, Any]]) -> dict[s
     }
 
 
-def _infer_question_type_from_text(question: str) -> str:
-    normalized = question.lower()
-    if any(term in normalized for term in ("interaction", "interact", "contraindicated", "combine", "co-administer", "coadminister")):
-        return "drug_interaction"
-    if any(term in normalized for term in ("dose", "dosage", "mg", "mcg", "titrate")):
-        return "dosage"
-    if any(term in normalized for term in ("diagnosis", "diagnose", "differential", "most likely")):
-        return "diagnosis"
-    if any(term in normalized for term in ("cause", "causes", "etiology", "mechanism")):
-        return "etiology"
-    return "other"
+def _question_type_hint_from_record(record: Mapping[str, Any], *, question: str) -> str | None:
+    hint_fields = ("question_type", "type", "puzzle_id", "puzzle_identifiers")
+    if not any(field_name in record for field_name in hint_fields):
+        return None
+    hinted_question_type = infer_question_type(record=record, question=question, fallback_label="other")
+    return hinted_question_type or None
 
 
 def _list_or_empty(value: Any) -> list[Any]:
