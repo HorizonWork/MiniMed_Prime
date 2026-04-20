@@ -24,18 +24,39 @@ def main() -> int:
     parser.add_argument("--split", default="train", choices=("train", "test", "val"), help="Dataset split folder name.")
     parser.add_argument("--limit", type=int, default=None, help="Optional max examples.")
     parser.add_argument("--device", default="cpu", help="Embedder device.")
+    parser.add_argument("--primekg-path", default=Path("data/kg/primekg"), type=Path, help="PrimeKG source path for codebook compatibility checks.")
+    parser.add_argument("--frozen-codebook", default=None, type=Path, help="Path to a frozen VQ codebook artifact directory or codebook.pt.")
+    parser.add_argument(
+        "--allow-codebook-fallback",
+        action="store_true",
+        help="Explicitly allow dataset building without a frozen codebook artifact.",
+    )
+    parser.add_argument("--embedder-hidden-dim", type=int, default=256, help="Layer 2 hidden dimension.")
+    parser.add_argument("--embedder-codebook-size", type=int, default=4096, help="Layer 2 codebook size.")
+    parser.add_argument("--embedder-max-len", type=int, default=256, help="Layer 2 max token length.")
     parser.add_argument("--kaggle", action="store_true", help="Enable Kaggle memory/path handling.")
     args = parser.parse_args()
 
     if args.kaggle or KaggleEnv.is_kaggle():
         T4Hardening.setup_memory()
+    if args.frozen_codebook is None and not args.allow_codebook_fallback:
+        raise SystemExit(
+            "Dataset build now requires a frozen VQ codebook. Pass --frozen-codebook PATH or opt into "
+            "--allow-codebook-fallback explicitly."
+        )
 
     event_logger = StructuredLogger("build_trm_dataset", DEFAULT_LOG_DIR)
     examples = list(_load_examples(args.input_jsonl, limit=args.limit))
     embedder = MedicalGraphEmbedder(
+        hidden_dim=args.embedder_hidden_dim,
+        codebook_size=args.embedder_codebook_size,
+        max_len=args.embedder_max_len,
         sapbert_model_name=_optional_path("data/checkpoints/sapbert"),
         medcpt_article_model_name=_optional_path("data/checkpoints/medcpt-article"),
         device=args.device,
+        primekg_path=args.primekg_path,
+        frozen_codebook_path=args.frozen_codebook,
+        allow_codebook_fallback=args.allow_codebook_fallback,
     )
     arrays = build_trm_dataset_arrays(examples, embedder)
     save_dir = save_trm_dataset(arrays, KaggleEnv.path(args.output_dir), split=args.split)
@@ -52,6 +73,8 @@ def main() -> int:
         "mean_labeled_token_count": float(graph_stats.get("mean_labeled_token_count", 0.0)),
         "label_mode": label_stats.get("label_mode"),
         "save_dir": str(save_dir),
+        "codebook_version": getattr(embedder, "codebook_version", None),
+        "frozen_codebook_path": getattr(embedder, "frozen_codebook_path", None),
         "metadata": arrays.metadata,
     }
     event_logger.log_event(

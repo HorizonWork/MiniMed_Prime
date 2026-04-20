@@ -13,6 +13,15 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from .vq_artifacts import (
+    apply_frozen_codebook,
+    assert_metadata_compatibility,
+    build_codebook_version,
+    compute_schema_hash,
+    compute_source_graph_signature,
+    load_frozen_codebook,
+    utc_now_iso,
+)
 from src.schemas import EvidenceBundle, PrimeKGRelation, TRMInputBundle
 from src.utils.kaggle_env import KaggleEnv
 from src.utils.path_resolver import KagglePathResolver
@@ -38,6 +47,7 @@ DEFAULT_VECTOR_QUANTIZE_BETA = 0.25
 DEFAULT_PPR_ALPHA = 0.85
 DEFAULT_PASSAGE_PREFIX = "PMID:"
 DEFAULT_PAD_IDENTIFIER = "__pad__"
+DEFAULT_PRIMEKG_PATH = Path("data/kg/primekg")
 
 QUESTION_TYPE_TO_PUZZLE_ID = {
     "drug_interaction": 0,
@@ -311,6 +321,10 @@ class MedicalGraphEmbedder(nn.Module):
         local_files_only: bool = True,
         device: str | torch.device | None = None,
         sapbert_path: str | None = None,
+        primekg_path: str | Path | None = None,
+        frozen_codebook_path: str | Path | None = None,
+        allow_codebook_fallback: bool = True,
+        strict_source_graph_signature: bool = False,
     ) -> None:
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -319,6 +333,13 @@ class MedicalGraphEmbedder(nn.Module):
         self.n_relations = n_relations
         self.n_node_types = n_node_types
         self.device = torch.device(device or "cpu")
+        self.primekg_path = (
+            primekg_path
+            if isinstance(primekg_path, Path) and primekg_path.is_absolute()
+            else KaggleEnv.path(Path(primekg_path or DEFAULT_PRIMEKG_PATH))
+        )
+        self.allow_codebook_fallback = bool(allow_codebook_fallback)
+        self.strict_source_graph_signature = bool(strict_source_graph_signature)
         self.event_logger = StructuredLogger("layer2_embedder", DEFAULT_LOG_DIR)
 
         self.node_proj = nn.Linear(DEFAULT_TEXT_EMBED_DIM + n_node_types + 2, hidden_dim)
@@ -365,8 +386,26 @@ class MedicalGraphEmbedder(nn.Module):
         self.padding_token_id = self.vq.padding_index
         self.backend_used = "fallback_hash"
         self.last_backend_used: dict[str, str] = {}
+        self.relation_schema_hash = compute_schema_hash(tuple(self.relation_to_index.keys()))
+        self.node_type_schema_hash = compute_schema_hash(tuple(self.node_type_to_index.keys()))
+        self.source_graph_signature = compute_source_graph_signature(self.primekg_path)
+        self.codebook_version = f"deterministic_vq:{self.codebook_size}"
+        self.frozen_codebook_path: str | None = None
+        self.frozen_codebook_metadata: dict[str, Any] | None = None
+        self._codebook_is_frozen = False
+        self._initialize_non_codebook_parameters_deterministically()
         self._initialize_sapbert_backend()
         self.to(self.device)
+        if frozen_codebook_path is not None:
+            self.load_frozen_codebook(
+                frozen_codebook_path,
+                freeze=True,
+                strict_source_graph_signature=self.strict_source_graph_signature,
+            )
+        elif not self.allow_codebook_fallback:
+            raise FileNotFoundError(
+                "No frozen codebook path was provided for MedicalGraphEmbedder and allow_codebook_fallback is False."
+            )
         self.eval()
 
     def forward(self, bundle: EvidenceBundle) -> dict[str, Any]:
@@ -409,7 +448,7 @@ class MedicalGraphEmbedder(nn.Module):
             "node_text_encoder": node_backend,
             "passage_text_encoder": passage_backend,
             "graph_encoder": graph_backend,
-            "vector_quantizer": "deterministic_vq",
+            "vector_quantizer": self._vector_quantizer_backend(),
             "layer2_backend": self.backend_used,
         }
         self.event_logger.log_event(
@@ -418,6 +457,7 @@ class MedicalGraphEmbedder(nn.Module):
                 "encoder": node_backend,
                 "vq_tokens": int(token_ids.numel()),
                 "layer2_backend": self.backend_used,
+                "codebook_version": self.codebook_version,
                 "backend_used": dict(self.last_backend_used),
                 "latency_ms": None,
             },
@@ -427,7 +467,8 @@ class MedicalGraphEmbedder(nn.Module):
             {
                 "codebook_hits": int((codebook_indices != self.padding_token_id).sum().item()),
                 "pad_tokens": int((codebook_indices == self.padding_token_id).sum().item()),
-                "backend_used": "deterministic_vq",
+                "codebook_version": self.codebook_version,
+                "backend_used": self._vector_quantizer_backend(),
                 "latency_ms": None,
             },
         )
@@ -438,6 +479,7 @@ class MedicalGraphEmbedder(nn.Module):
             "node_mapping": node_mapping,
             "layer2_backend": self.backend_used,
             "backend_used": dict(self.last_backend_used),
+            "codebook_version": self.codebook_version,
         }
 
     def to_trm_input_bundle(self, bundle: EvidenceBundle) -> TRMInputBundle:
@@ -454,13 +496,16 @@ class MedicalGraphEmbedder(nn.Module):
         epochs: int = 1,
         lr: float = 1e-3,
     ) -> list[dict[str, float]]:
+        if self._codebook_is_frozen:
+            raise RuntimeError("Cannot pretrain VQ while a frozen codebook is loaded. Reload with freeze=False to resume training.")
         samples = list(subgraph_samples)
         if not samples:
             return []
 
         was_training = self.training
         self.train()
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        trainable_parameters = [self.vq.codebook.weight, *self.reconstruction_head.parameters()]
+        optimizer = torch.optim.Adam(trainable_parameters, lr=lr)
         history: list[dict[str, float]] = []
 
         for epoch_index in range(epochs):
@@ -505,6 +550,75 @@ class MedicalGraphEmbedder(nn.Module):
             self.eval()
         return history
 
+    def build_codebook_metadata(
+        self,
+        *,
+        num_subgraphs_seen: int,
+        seed: int,
+        created_at: str | None = None,
+        codebook_version: str | None = None,
+    ) -> dict[str, Any]:
+        created_value = created_at or utc_now_iso()
+        version_value = codebook_version or build_codebook_version(
+            created_at=created_value,
+            codebook_size=self.codebook_size,
+            hidden_dim=self.hidden_dim,
+            seed=int(seed),
+            relation_schema_hash=self.relation_schema_hash,
+            node_type_schema_hash=self.node_type_schema_hash,
+            source_graph_signature=self.source_graph_signature,
+        )
+        return {
+            "codebook_version": version_value,
+            "created_at": created_value,
+            "codebook_size": int(self.codebook_size),
+            "hidden_dim": int(self.hidden_dim),
+            "num_subgraphs_seen": int(num_subgraphs_seen),
+            "relation_schema_hash": self.relation_schema_hash,
+            "node_type_schema_hash": self.node_type_schema_hash,
+            "source_graph_signature": self.source_graph_signature,
+            "seed": int(seed),
+        }
+
+    def export_codebook_state(self) -> dict[str, Any]:
+        return {
+            "codebook_size": int(self.codebook_size),
+            "hidden_dim": int(self.hidden_dim),
+            "padding_index": int(self.padding_token_id),
+            "codebook_version": self.codebook_version,
+            "reconstruction_head_state_dict": {
+                key: value.detach().cpu()
+                for key, value in self.reconstruction_head.state_dict().items()
+            },
+        }
+
+    def load_frozen_codebook(
+        self,
+        path: str | Path,
+        *,
+        freeze: bool = True,
+        strict_source_graph_signature: bool = False,
+    ) -> dict[str, Any]:
+        artifact = load_frozen_codebook(path)
+        assert_metadata_compatibility(
+            artifact.metadata,
+            expected_codebook_size=self.codebook_size,
+            expected_hidden_dim=self.hidden_dim,
+            expected_relation_schema_hash=self.relation_schema_hash,
+            expected_node_type_schema_hash=self.node_type_schema_hash,
+            expected_source_graph_signature=self.source_graph_signature,
+            strict_source_graph_signature=strict_source_graph_signature,
+        )
+        apply_frozen_codebook(self.vq, artifact, freeze=freeze)
+        reconstruction_head_state = artifact.state.get("reconstruction_head_state_dict")
+        if isinstance(reconstruction_head_state, dict):
+            self.reconstruction_head.load_state_dict(reconstruction_head_state, strict=False)
+        self.codebook_version = str(artifact.metadata.get("codebook_version") or self.codebook_version)
+        self.frozen_codebook_path = str(artifact.paths.codebook_path)
+        self.frozen_codebook_metadata = dict(artifact.metadata)
+        self._codebook_is_frozen = bool(freeze)
+        return dict(artifact.metadata)
+
     def _initialize_sapbert_backend(self) -> None:
         if self.node_text_encoder.model_name is None:
             self.backend_used = "fallback_hash"
@@ -521,6 +635,41 @@ class MedicalGraphEmbedder(nn.Module):
         except Exception as exc:
             self.backend_used = "fallback_hash"
             logger.error("SapBERT warmup failed: %s", exc)
+
+    def _initialize_non_codebook_parameters_deterministically(self) -> None:
+        for name, parameter in self.named_parameters():
+            if name.startswith("vq.codebook"):
+                continue
+            if not torch.is_floating_point(parameter):
+                continue
+            with torch.no_grad():
+                if name.endswith("bias"):
+                    parameter.zero_()
+                    continue
+                if parameter.ndim == 1:
+                    if "norm" in name:
+                        parameter.fill_(1.0)
+                    else:
+                        parameter.copy_(self._deterministic_fill(parameter, name=name, scale=0.05))
+                    continue
+                parameter.copy_(self._deterministic_fill(parameter, name=name, scale=0.125))
+
+    @staticmethod
+    def _deterministic_fill(parameter: torch.Tensor, *, name: str, scale: float) -> torch.Tensor:
+        flat = torch.arange(parameter.numel(), dtype=torch.float32).reshape(parameter.shape)
+        name_seed = sum(ord(character) for character in name) % 1021
+        values = torch.sin(flat * 0.017 + name_seed * 0.001) + torch.cos(flat * 0.013 - name_seed * 0.002)
+        values = values * scale
+        if parameter.ndim >= 2:
+            flattened = values.reshape(values.shape[0], -1)
+            normalized = F.normalize(flattened, dim=-1)
+            values = normalized.reshape(parameter.shape) * scale
+        return values.to(dtype=parameter.dtype)
+
+    def _vector_quantizer_backend(self) -> str:
+        if self.frozen_codebook_metadata is not None:
+            return f"frozen_codebook:{self.codebook_version}"
+        return f"deterministic_vq:{self.codebook_size}"
 
     def _build_graph_inputs(self, bundle: EvidenceBundle) -> GraphInputs:
         graph = nx.DiGraph()
@@ -814,4 +963,4 @@ def get_sapbert_path(explicit_path: str | Path | None = None) -> str | None:
     return None
 
 
-__all__ = ["MedicalGraphEmbedder", "get_sapbert_path"]
+__all__ = ["MedicalGraphEmbedder", "get_sapbert_path", "load_frozen_codebook"]

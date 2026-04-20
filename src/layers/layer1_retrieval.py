@@ -7,8 +7,16 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence, get_args
+from typing import Any, Iterable, Mapping, Sequence, get_args
 
+from src.retrieval import (
+    DEFAULT_FALLBACK_RELATIONS,
+    QUESTION_TYPE_PATTERNS as SHARED_QUESTION_TYPE_PATTERNS,
+    QUESTION_TYPE_TO_RELATIONS,
+    infer_question_type,
+    resolve_relation_filter,
+    summarize_relation_filter_stats,
+)
 from src.schemas import EvidenceBundle, KGEdge, PrimeKGRelation, PubMedPassage, QuestionEntity, QuestionType
 from src.utils.kaggle_env import KaggleEnv
 from src.utils.pubmed_client import PubMedArticle, PubMedClient
@@ -40,6 +48,7 @@ DEFAULT_PPR_ALPHA = 0.85
 DEFAULT_EDGE_SEED_BONUS = 0.05
 DEFAULT_EDGE_SOURCE_WEIGHT = 0.10
 DEFAULT_EDGE_NODE_WEIGHT = 0.45
+DEFAULT_PRIMEKG_READ_CHUNK_SIZE = 5_000
 DEFAULT_BM25_WEIGHT = 0.4
 DEFAULT_DENSE_WEIGHT = 0.3
 DEFAULT_CROSS_ENCODER_WEIGHT = 0.3
@@ -58,32 +67,17 @@ PRIMEKG_FILE_PRIORITY = (
 )
 
 QUESTION_TYPE_PATTERNS: dict[QuestionType, tuple[str, ...]] = {
-    "drug_interaction": ("interaction", "interact", "contraindicated", "combine", "co-administer", "coadminister"),
-    "dosage": ("dose", "dosage", "mg", "mcg", "titrate", "how much"),
-    "diagnosis": ("diagnosis", "diagnose", "differential", "most likely", "presents with", "likely condition"),
-    "etiology": ("cause", "causes", "caused by", "etiology", "why does", "mechanism"),
-    "factoid": (),
-    "other": (),
+    question_type: tuple(patterns)
+    for question_type, patterns in SHARED_QUESTION_TYPE_PATTERNS.items()
 }
 
 QUESTION_TYPE_RELATION_FILTERS: dict[QuestionType, set[str]] = {
-    "drug_interaction": {"drug_drug", "contraindication", "drug_effect", "drug_protein"},
-    "etiology": {
-        "disease_disease",
-        "disease_protein",
-        "exposure_disease",
-        "exposure_protein",
-        "phenotype_protein",
-    },
-    "diagnosis": {
-        "disease_phenotype_negative",
-        "disease_phenotype_positive",
-        "phenotype_phenotype",
-        "disease_disease",
-    },
-    "dosage": {"drug_protein", "drug_effect", "contraindication"},
-    "factoid": set(),
-    "other": set(),
+    "drug_interaction": set(QUESTION_TYPE_TO_RELATIONS["drug_interaction"]),
+    "etiology": set(QUESTION_TYPE_TO_RELATIONS["etiology"]),
+    "diagnosis": set(QUESTION_TYPE_TO_RELATIONS["diagnosis"]),
+    "dosage": set(QUESTION_TYPE_TO_RELATIONS["dosage"]),
+    "factoid": set(DEFAULT_FALLBACK_RELATIONS),
+    "other": set(DEFAULT_FALLBACK_RELATIONS),
 }
 
 NODE_TYPE_TO_ENTITY_TYPE = {
@@ -209,6 +203,7 @@ class PrimeKGExtractorConfig:
     primekg_path: Path
     ppr_alpha: float = DEFAULT_PPR_ALPHA
     top_k: int = DEFAULT_PRIMEKG_TOP_K
+    max_edges_to_load: int | None = None
     source_reliability_lookup: dict[str, float] = field(default_factory=lambda: dict(SOURCE_RELIABILITY_LOOKUP))
     default_source_reliability: float = DEFAULT_SOURCE_RELIABILITY
     edge_seed_bonus: float = DEFAULT_EDGE_SEED_BONUS
@@ -238,7 +233,9 @@ class AgenticRetrieverConfig:
     scispacy_model: str = DEFAULT_SCISPACY_MODEL
     primekg_top_k: int = DEFAULT_PRIMEKG_TOP_K
     pubmed_top_k: int = DEFAULT_PUBMED_TOP_K
+    use_relation_filter: bool = True
     relation_filter: set[str] | None = None
+    relation_filter_overrides: dict[str, set[str]] | None = None
     pubmed_api_key: str | None = None
 
 
@@ -562,9 +559,12 @@ class EntityLinker:
 class PrimeKGExtractor:
     """PrimeKG loader and ranked 2-hop subgraph extractor."""
 
-    def __init__(self, primekg_path: Path) -> None:
+    def __init__(self, primekg_path: Path, max_edges_to_load: int | None = None) -> None:
         resolved_primekg_path = primekg_path if primekg_path.is_absolute() else KaggleEnv.path(primekg_path)
-        self.config = PrimeKGExtractorConfig(primekg_path=resolved_primekg_path)
+        self.config = PrimeKGExtractorConfig(
+            primekg_path=resolved_primekg_path,
+            max_edges_to_load=max_edges_to_load,
+        )
         self.graph = nx.MultiDiGraph()
         self.node_degrees: dict[str, int] = {}
         self.relation_type_mapping: dict[str, int] = {}
@@ -573,6 +573,15 @@ class PrimeKGExtractor:
         self.node_cui_index: dict[str, set[str]] = defaultdict(set)
         self.event_logger = StructuredLogger("layer1_retrieval", DEFAULT_LOG_DIR)
         self.backend_used = "empty_graph"
+        self.last_relation_filter_stats = summarize_relation_filter_stats(
+            question_type="other",
+            edges_before=0,
+            edges_after=0,
+            node_count_after=0,
+            fallback_stage="not_run",
+            override_source=None,
+            use_relation_filter=False,
+        )
         self._load_primekg()
 
     def resolve_seed_entities(self, seed_entities: Sequence[QuestionEntity]) -> list[QuestionEntity]:
@@ -601,10 +610,24 @@ class PrimeKGExtractor:
         seed_entities: list[QuestionEntity],
         top_k: int = DEFAULT_PRIMEKG_TOP_K,
         relation_filter: set[str] | None = None,
+        *,
+        question_type: str | None = None,
+        use_relation_filter: bool = True,
+        relation_filter_overrides: Mapping[str, set[str] | Sequence[str]] | None = None,
     ) -> list[KGEdge]:
         """Extract a ranked 2-hop neighborhood around seed entities."""
 
         started_at = time.perf_counter()
+        effective_question_type = str(question_type or "other")
+        self.last_relation_filter_stats = summarize_relation_filter_stats(
+            question_type=effective_question_type,
+            edges_before=0,
+            edges_after=0,
+            node_count_after=0,
+            fallback_stage="not_run",
+            override_source=None,
+            use_relation_filter=use_relation_filter,
+        )
         if not self.graph:
             return []
 
@@ -613,21 +636,114 @@ class PrimeKGExtractor:
         if not seed_node_ids:
             return []
 
-        allowed_relations = {relation.lower() for relation in relation_filter} if relation_filter else None
-        candidate_edge_ids: set[str] = set()
-        candidate_node_ids: set[str] = set(seed_node_ids)
-        frontier = set(seed_node_ids)
-        visited = set(seed_node_ids)
-        for _ in range(2):
-            next_frontier: set[str] = set()
-            for node_id in frontier:
-                for edge in self._iter_incident_edges(node_id=node_id, allowed_relations=allowed_relations):
-                    candidate_edge_ids.add(edge.edge_id)
-                    candidate_node_ids.update((edge.head, edge.tail))
-                    next_frontier.update((edge.head, edge.tail))
-            frontier = next_frontier - visited
-            visited.update(next_frontier)
+        raw_candidate_edge_ids, raw_candidate_node_ids, _ = self._collect_two_hop_candidates(seed_node_ids=seed_node_ids, allowed_relations=None)
+        if not raw_candidate_edge_ids:
+            return []
 
+        candidate_edge_ids = set(raw_candidate_edge_ids)
+        candidate_node_ids = set(raw_candidate_node_ids)
+        relation_filter_stats = summarize_relation_filter_stats(
+            question_type=effective_question_type,
+            edges_before=len(raw_candidate_edge_ids),
+            edges_after=len(raw_candidate_edge_ids),
+            node_count_after=len(raw_candidate_node_ids),
+            fallback_stage="disabled" if not use_relation_filter else "none",
+            override_source="disabled" if not use_relation_filter else None,
+            use_relation_filter=use_relation_filter,
+        )
+
+        if use_relation_filter:
+            available_relations = self.get_available_relations()
+            resolution = resolve_relation_filter(
+                question_type=effective_question_type,
+                available_relations=available_relations,
+                overrides=relation_filter_overrides,
+                explicit_override=relation_filter,
+            )
+            filtered_edge_ids, filtered_node_ids, _ = self._collect_two_hop_candidates(
+                seed_node_ids=seed_node_ids,
+                allowed_relations=set(resolution.matched_relations),
+            )
+            candidate_edge_ids = set(filtered_edge_ids)
+            candidate_node_ids = set(filtered_node_ids)
+            relation_filter_stats = summarize_relation_filter_stats(
+                question_type=effective_question_type,
+                canonical_question_type=resolution.canonical_question_type,
+                requested_relations=resolution.requested_relations,
+                matched_relations=resolution.matched_relations,
+                requested_but_missing_relations=resolution.requested_but_missing_relations,
+                edges_before=len(raw_candidate_edge_ids),
+                edges_after=len(filtered_edge_ids),
+                node_count_after=len(filtered_node_ids),
+                fallback_stage="none",
+                override_source=resolution.override_source,
+                use_relation_filter=True,
+            )
+            if resolution.requested_but_missing_relations:
+                logger.warning(
+                    "Relation filter requested unavailable PrimeKG relations for %s: %s",
+                    effective_question_type,
+                    sorted(resolution.requested_but_missing_relations),
+                )
+
+            if not candidate_edge_ids:
+                compact_resolution = resolve_relation_filter(
+                    question_type="other",
+                    available_relations=available_relations,
+                )
+                compact_edge_ids, compact_node_ids, _ = self._collect_two_hop_candidates(
+                    seed_node_ids=seed_node_ids,
+                    allowed_relations=set(compact_resolution.matched_relations),
+                )
+                if compact_edge_ids:
+                    logger.warning(
+                        "Relation filter for %s produced zero edges. Falling back to compact relation set.",
+                        effective_question_type,
+                    )
+                    self.event_logger.log_event(
+                        "relation_filter_fallback_compact",
+                        {
+                            **relation_filter_stats,
+                            "fallback_stage": "compact_fallback",
+                            "fallback_matched_relations": sorted(compact_resolution.matched_relations),
+                            "latency_ms": 0.0,
+                            "backend_used": self.backend_used,
+                        },
+                    )
+                    candidate_edge_ids = set(compact_edge_ids)
+                    candidate_node_ids = set(compact_node_ids)
+                    relation_filter_stats = {
+                        **relation_filter_stats,
+                        "matched_relations": sorted(compact_resolution.matched_relations),
+                        "edges_after": len(compact_edge_ids),
+                        "node_count_after": len(compact_node_ids),
+                        "fallback_stage": "compact_fallback",
+                    }
+                else:
+                    logger.warning(
+                        "Relation filter for %s still produced zero edges after compact fallback. Reverting to original behavior.",
+                        effective_question_type,
+                    )
+                    self.event_logger.log_event(
+                        "relation_filter_fallback_original_behavior",
+                        {
+                            **relation_filter_stats,
+                            "fallback_stage": "original_behavior",
+                            "latency_ms": 0.0,
+                            "backend_used": self.backend_used,
+                        },
+                    )
+                    candidate_edge_ids = set(raw_candidate_edge_ids)
+                    candidate_node_ids = set(raw_candidate_node_ids)
+                    relation_filter_stats = {
+                        **relation_filter_stats,
+                        "matched_relations": [],
+                        "edges_after": len(raw_candidate_edge_ids),
+                        "node_count_after": len(raw_candidate_node_ids),
+                        "fallback_stage": "original_behavior",
+                    }
+
+        self.last_relation_filter_stats = relation_filter_stats
         if not candidate_edge_ids:
             return []
 
@@ -656,11 +772,16 @@ class PrimeKGExtractor:
                 "edges": len(top_edges),
                 "hops": 2,
                 "ppr_topk": top_k,
-                "backend_used": "networkx_csv",
+                "question_type": effective_question_type,
+                "relation_filter": self.last_relation_filter_stats,
+                "backend_used": self.backend_used,
                 "latency_ms": (time.perf_counter() - started_at) * 1000.0,
             },
         )
         return top_edges
+
+    def get_available_relations(self) -> set[str]:
+        return set(self.relation_type_mapping) if self.relation_type_mapping else {edge.relation for edge in self.edge_lookup.values()}
 
     def _load_primekg(self) -> None:
         started_at = time.perf_counter()
@@ -684,9 +805,120 @@ class PrimeKGExtractor:
             )
             return
 
-        frame = pd.read_csv(primekg_path)
-        if frame.empty:
-            logger.warning("PrimeKG file %s is empty.", primekg_path)
+        header_frame = pd.read_csv(primekg_path, nrows=0)
+        relation_choices = set(get_args(PrimeKGRelation))
+        head_id_column = self._resolve_column(header_frame, ("x_id", "source_id", "head_id"))
+        tail_id_column = self._resolve_column(header_frame, ("y_id", "target_id", "tail_id"))
+        head_name_column = self._resolve_column(header_frame, ("x_name", "source_name", "head_name"))
+        tail_name_column = self._resolve_column(header_frame, ("y_name", "target_name", "tail_name"))
+        head_type_column = self._resolve_column(header_frame, ("x_type", "source_type", "head_type"))
+        tail_type_column = self._resolve_column(header_frame, ("y_type", "target_type", "tail_type"))
+        relation_column = self._resolve_column(header_frame, ("relation", "relation_type"))
+        display_relation_column = self._resolve_column(header_frame, ("display_relation", "relation_display"))
+        source_column = self._resolve_column(header_frame, ("source", "resource", "provenance"), required=False)
+        pmid_column = self._resolve_column(header_frame, ("supporting_pmids", "pubmed_ids", "pmids"), required=False)
+        edge_id_column = self._resolve_column(header_frame, ("edge_id", "id"), required=False)
+        head_cui_column = self._resolve_column(header_frame, ("x_cui", "source_cui", "head_cui"), required=False)
+        tail_cui_column = self._resolve_column(header_frame, ("y_cui", "target_cui", "tail_cui"), required=False)
+        usecols = [
+            column
+            for column in (
+                head_id_column,
+                tail_id_column,
+                head_name_column,
+                tail_name_column,
+                head_type_column,
+                tail_type_column,
+                relation_column,
+                display_relation_column,
+                source_column,
+                pmid_column,
+                edge_id_column,
+                head_cui_column,
+                tail_cui_column,
+            )
+            if column is not None
+        ]
+
+        row_index = 0
+        loaded_edges = 0
+        edge_limit = self.config.max_edges_to_load
+        for chunk in pd.read_csv(
+            primekg_path,
+            usecols=usecols,
+            dtype=str,
+            keep_default_na=False,
+            chunksize=DEFAULT_PRIMEKG_READ_CHUNK_SIZE,
+        ):
+            for row in chunk.itertuples(index=False):
+                if edge_limit is not None and loaded_edges >= edge_limit:
+                    break
+                current_row_index = row_index
+                row_index += 1
+                relation = str(getattr(row, relation_column))
+                if relation not in relation_choices:
+                    continue
+                head_id = self._string_or_fallback(getattr(row, head_id_column), fallback=f"node:{current_row_index}:head")
+                tail_id = self._string_or_fallback(getattr(row, tail_id_column), fallback=f"node:{current_row_index}:tail")
+                edge_id = (
+                    self._string_or_fallback(
+                        getattr(row, edge_id_column),
+                        fallback=f"{head_id}|{relation}|{tail_id}|{current_row_index}",
+                    )
+                    if edge_id_column is not None
+                    else f"{head_id}|{relation}|{tail_id}|{current_row_index}"
+                )
+                head_name = self._string_or_fallback(getattr(row, head_name_column), fallback=head_id)
+                tail_name = self._string_or_fallback(getattr(row, tail_name_column), fallback=tail_id)
+                head_type = self._string_or_fallback(getattr(row, head_type_column), fallback="other")
+                tail_type = self._string_or_fallback(getattr(row, tail_type_column), fallback="other")
+                display_relation = (
+                    self._string_or_fallback(getattr(row, display_relation_column), fallback=relation.replace("_", " "))
+                    if display_relation_column is not None
+                    else relation.replace("_", " ")
+                )
+                source_name = (
+                    self._string_or_fallback(getattr(row, source_column), fallback="primekg")
+                    if source_column is not None
+                    else "primekg"
+                )
+                supporting_pmids = self._parse_supporting_pmids(getattr(row, pmid_column)) if pmid_column is not None else []
+
+                source_reliability = self.config.source_reliability_lookup.get(
+                    source_name.strip().lower(),
+                    self.config.default_source_reliability,
+                )
+                edge = KGEdge(
+                    edge_id=edge_id,
+                    head=head_id,
+                    tail=tail_id,
+                    relation=relation,
+                    display_relation=display_relation,
+                    source_reliability=source_reliability,
+                    amg_confidence=1.0,
+                    supporting_pmids=supporting_pmids,
+                )
+                self.edge_lookup[edge.edge_id] = edge
+                self.graph.add_node(head_id, name=head_name, node_type=head_type)
+                self.graph.add_node(tail_id, name=tail_name, node_type=tail_type)
+                self.graph.add_edge(head_id, tail_id, key=edge.edge_id, edge_id=edge.edge_id)
+
+                self.node_name_index[self._normalize_text(head_name)].add(head_id)
+                self.node_name_index[self._normalize_text(tail_name)].add(tail_id)
+                if head_cui_column is not None:
+                    head_cui = self._normalize_text(self._string_or_fallback(getattr(row, head_cui_column), fallback=""))
+                    if head_cui:
+                        self.node_cui_index[head_cui].add(head_id)
+                if tail_cui_column is not None:
+                    tail_cui = self._normalize_text(self._string_or_fallback(getattr(row, tail_cui_column), fallback=""))
+                    if tail_cui:
+                        self.node_cui_index[tail_cui].add(tail_id)
+                loaded_edges += 1
+            if edge_limit is not None and loaded_edges >= edge_limit:
+                break
+
+        if loaded_edges == 0:
+            logger.warning("PrimeKG file %s is empty or did not contain valid relations.", primekg_path)
             self.event_logger.log_event(
                 "primekg_empty",
                 {
@@ -696,78 +928,6 @@ class PrimeKGExtractor:
                 },
             )
             return
-
-        relation_choices = set(get_args(PrimeKGRelation))
-        head_id_column = self._resolve_column(frame, ("x_id", "source_id", "head_id"))
-        tail_id_column = self._resolve_column(frame, ("y_id", "target_id", "tail_id"))
-        head_name_column = self._resolve_column(frame, ("x_name", "source_name", "head_name"))
-        tail_name_column = self._resolve_column(frame, ("y_name", "target_name", "tail_name"))
-        head_type_column = self._resolve_column(frame, ("x_type", "source_type", "head_type"))
-        tail_type_column = self._resolve_column(frame, ("y_type", "target_type", "tail_type"))
-        relation_column = self._resolve_column(frame, ("relation", "relation_type"))
-        display_relation_column = self._resolve_column(frame, ("display_relation", "relation_display"))
-        source_column = self._resolve_column(frame, ("source", "resource", "provenance"), required=False)
-        pmid_column = self._resolve_column(frame, ("supporting_pmids", "pubmed_ids", "pmids"), required=False)
-        edge_id_column = self._resolve_column(frame, ("edge_id", "id"), required=False)
-        head_cui_column = self._resolve_column(frame, ("x_cui", "source_cui", "head_cui"), required=False)
-        tail_cui_column = self._resolve_column(frame, ("y_cui", "target_cui", "tail_cui"), required=False)
-
-        for row in frame.itertuples(index=True):
-            relation = str(getattr(row, relation_column))
-            if relation not in relation_choices:
-                continue
-            head_id = self._string_or_fallback(getattr(row, head_id_column), fallback=f"node:{row.Index}:head")
-            tail_id = self._string_or_fallback(getattr(row, tail_id_column), fallback=f"node:{row.Index}:tail")
-            edge_id = (
-                self._string_or_fallback(getattr(row, edge_id_column), fallback=f"{head_id}|{relation}|{tail_id}|{row.Index}")
-                if edge_id_column is not None
-                else f"{head_id}|{relation}|{tail_id}|{row.Index}"
-            )
-            head_name = self._string_or_fallback(getattr(row, head_name_column), fallback=head_id)
-            tail_name = self._string_or_fallback(getattr(row, tail_name_column), fallback=tail_id)
-            head_type = self._string_or_fallback(getattr(row, head_type_column), fallback="other")
-            tail_type = self._string_or_fallback(getattr(row, tail_type_column), fallback="other")
-            display_relation = (
-                self._string_or_fallback(getattr(row, display_relation_column), fallback=relation.replace("_", " "))
-                if display_relation_column is not None
-                else relation.replace("_", " ")
-            )
-            source_name = (
-                self._string_or_fallback(getattr(row, source_column), fallback="primekg") if source_column is not None else "primekg"
-            )
-            supporting_pmids = (
-                self._parse_supporting_pmids(getattr(row, pmid_column)) if pmid_column is not None else []
-            )
-
-            source_reliability = self.config.source_reliability_lookup.get(
-                source_name.strip().lower(),
-                self.config.default_source_reliability,
-            )
-            edge = KGEdge(
-                edge_id=edge_id,
-                head=head_id,
-                tail=tail_id,
-                relation=relation,
-                display_relation=display_relation,
-                source_reliability=source_reliability,
-                amg_confidence=1.0,
-                supporting_pmids=supporting_pmids,
-            )
-            self.edge_lookup[edge.edge_id] = edge
-            self.graph.add_node(head_id, name=head_name, node_type=head_type)
-            self.graph.add_node(tail_id, name=tail_name, node_type=tail_type)
-            self.graph.add_edge(head_id, tail_id, key=edge.edge_id, edge_id=edge.edge_id)
-
-            self.node_name_index[self._normalize_text(head_name)].add(head_id)
-            self.node_name_index[self._normalize_text(tail_name)].add(tail_id)
-            if head_cui_column is not None:
-                head_cui = self._normalize_text(self._string_or_fallback(getattr(row, head_cui_column), fallback=""))
-                if head_cui:
-                    self.node_cui_index[head_cui].add(head_id)
-            if tail_cui_column is not None:
-                tail_cui = self._normalize_text(self._string_or_fallback(getattr(row, tail_cui_column), fallback=""))
-                if tail_cui:
-                    self.node_cui_index[tail_cui].add(tail_id)
 
         self.node_degrees = {str(node_id): int(degree) for node_id, degree in self.graph.degree()}
         relation_counter = Counter(edge.relation for edge in self.edge_lookup.values())
@@ -779,6 +939,8 @@ class PrimeKGExtractor:
                 "primekg_path": str(primekg_path),
                 "nodes": self.graph.number_of_nodes(),
                 "edges": self.graph.number_of_edges(),
+                "max_edges_to_load": edge_limit,
+                "edge_limit_reached": bool(edge_limit is not None and loaded_edges >= edge_limit),
                 "backend_used": self.backend_used,
                 "latency_ms": (time.perf_counter() - started_at) * 1000.0,
             },
@@ -786,7 +948,18 @@ class PrimeKGExtractor:
 
     def _load_primekg_from_edge_node_tables(self, edges_path: Path, nodes_path: Path, *, started_at: float) -> bool:
         try:
-            nodes_frame = pd.read_csv(nodes_path)
+            nodes_header = pd.read_csv(nodes_path, nrows=0)
+            node_index_column = self._resolve_column(nodes_header, ("node_index", "index", "id"))
+            node_id_column = self._resolve_column(nodes_header, ("node_id", "id", "primekg_node_id"))
+            node_name_column = self._resolve_column(nodes_header, ("node_name", "name"))
+            node_type_column = self._resolve_column(nodes_header, ("node_type", "type"))
+            node_source_column = self._resolve_column(nodes_header, ("node_source", "source"), required=False)
+            node_usecols = [
+                column
+                for column in (node_index_column, node_id_column, node_name_column, node_type_column, node_source_column)
+                if column is not None
+            ]
+            nodes_frame = pd.read_csv(nodes_path, usecols=node_usecols, dtype=str, keep_default_na=False)
             node_index_column = self._resolve_column(nodes_frame, ("node_index", "index", "id"))
             node_id_column = self._resolve_column(nodes_frame, ("node_id", "id", "primekg_node_id"))
             node_name_column = self._resolve_column(nodes_frame, ("node_name", "name"))
@@ -807,53 +980,76 @@ class PrimeKGExtractor:
                     ),
                 }
 
-            edges_frame = pd.read_csv(edges_path)
             relation_choices = set(get_args(PrimeKGRelation))
-            head_index_column = self._resolve_column(edges_frame, ("x_index", "source_index", "head_index"))
-            tail_index_column = self._resolve_column(edges_frame, ("y_index", "target_index", "tail_index"))
-            relation_column = self._resolve_column(edges_frame, ("relation", "relation_type"))
-            display_relation_column = self._resolve_column(edges_frame, ("display_relation", "relation_display"))
-            edge_id_column = self._resolve_column(edges_frame, ("edge_id", "id"), required=False)
+            edges_header = pd.read_csv(edges_path, nrows=0)
+            head_index_column = self._resolve_column(edges_header, ("x_index", "source_index", "head_index"))
+            tail_index_column = self._resolve_column(edges_header, ("y_index", "target_index", "tail_index"))
+            relation_column = self._resolve_column(edges_header, ("relation", "relation_type"))
+            display_relation_column = self._resolve_column(edges_header, ("display_relation", "relation_display"))
+            edge_id_column = self._resolve_column(edges_header, ("edge_id", "id"), required=False)
+            edge_usecols = [
+                column
+                for column in (head_index_column, tail_index_column, relation_column, display_relation_column, edge_id_column)
+                if column is not None
+            ]
             loaded_edges = 0
-            for row in edges_frame.itertuples(index=True):
-                relation = str(getattr(row, relation_column))
-                if relation not in relation_choices:
-                    continue
-                head_record = node_records.get(self._node_index_key(getattr(row, head_index_column)))
-                tail_record = node_records.get(self._node_index_key(getattr(row, tail_index_column)))
-                if head_record is None or tail_record is None:
-                    continue
-                head_id = head_record["id"]
-                tail_id = tail_record["id"]
-                edge_id = (
-                    self._string_or_fallback(getattr(row, edge_id_column), fallback=f"{head_id}|{relation}|{tail_id}|{row.Index}")
-                    if edge_id_column is not None
-                    else f"{head_id}|{relation}|{tail_id}|{row.Index}"
-                )
-                source_name = head_record.get("source") or tail_record.get("source") or "primekg"
-                edge = KGEdge(
-                    edge_id=edge_id,
-                    head=head_id,
-                    tail=tail_id,
-                    relation=relation,
-                    display_relation=self._string_or_fallback(
-                        getattr(row, display_relation_column),
-                        fallback=relation.replace("_", " "),
-                    ),
-                    source_reliability=self.config.source_reliability_lookup.get(
-                        source_name.strip().lower(),
-                        self.config.default_source_reliability,
-                    ),
-                    amg_confidence=1.0,
-                    supporting_pmids=[],
-                )
-                self.edge_lookup[edge.edge_id] = edge
-                self.graph.add_node(head_id, name=head_record["name"], node_type=head_record["type"])
-                self.graph.add_node(tail_id, name=tail_record["name"], node_type=tail_record["type"])
-                self.graph.add_edge(head_id, tail_id, key=edge.edge_id, edge_id=edge.edge_id)
-                self.node_name_index[self._normalize_text(head_record["name"])].add(head_id)
-                self.node_name_index[self._normalize_text(tail_record["name"])].add(tail_id)
-                loaded_edges += 1
+            edge_limit = self.config.max_edges_to_load
+            row_index = 0
+            for chunk in pd.read_csv(
+                edges_path,
+                usecols=edge_usecols,
+                dtype=str,
+                keep_default_na=False,
+                chunksize=DEFAULT_PRIMEKG_READ_CHUNK_SIZE,
+            ):
+                for row in chunk.itertuples(index=False):
+                    if edge_limit is not None and loaded_edges >= edge_limit:
+                        break
+                    current_row_index = row_index
+                    row_index += 1
+                    relation = str(getattr(row, relation_column))
+                    if relation not in relation_choices:
+                        continue
+                    head_record = node_records.get(self._node_index_key(getattr(row, head_index_column)))
+                    tail_record = node_records.get(self._node_index_key(getattr(row, tail_index_column)))
+                    if head_record is None or tail_record is None:
+                        continue
+                    head_id = head_record["id"]
+                    tail_id = tail_record["id"]
+                    edge_id = (
+                        self._string_or_fallback(
+                            getattr(row, edge_id_column),
+                            fallback=f"{head_id}|{relation}|{tail_id}|{current_row_index}",
+                        )
+                        if edge_id_column is not None
+                        else f"{head_id}|{relation}|{tail_id}|{current_row_index}"
+                    )
+                    source_name = head_record.get("source") or tail_record.get("source") or "primekg"
+                    edge = KGEdge(
+                        edge_id=edge_id,
+                        head=head_id,
+                        tail=tail_id,
+                        relation=relation,
+                        display_relation=self._string_or_fallback(
+                            getattr(row, display_relation_column),
+                            fallback=relation.replace("_", " "),
+                        ),
+                        source_reliability=self.config.source_reliability_lookup.get(
+                            source_name.strip().lower(),
+                            self.config.default_source_reliability,
+                        ),
+                        amg_confidence=1.0,
+                        supporting_pmids=[],
+                    )
+                    self.edge_lookup[edge.edge_id] = edge
+                    self.graph.add_node(head_id, name=head_record["name"], node_type=head_record["type"])
+                    self.graph.add_node(tail_id, name=tail_record["name"], node_type=tail_record["type"])
+                    self.graph.add_edge(head_id, tail_id, key=edge.edge_id, edge_id=edge.edge_id)
+                    self.node_name_index[self._normalize_text(head_record["name"])].add(head_id)
+                    self.node_name_index[self._normalize_text(tail_record["name"])].add(tail_id)
+                    loaded_edges += 1
+                if edge_limit is not None and loaded_edges >= edge_limit:
+                    break
 
             self.node_degrees = {str(node_id): int(degree) for node_id, degree in self.graph.degree()}
             relation_counter = Counter(edge.relation for edge in self.edge_lookup.values())
@@ -867,6 +1063,8 @@ class PrimeKGExtractor:
                     "edges_path": str(edges_path),
                     "nodes": self.graph.number_of_nodes(),
                     "edges": loaded_edges,
+                    "max_edges_to_load": edge_limit,
+                    "edge_limit_reached": bool(edge_limit is not None and loaded_edges >= edge_limit),
                     "backend_used": self.backend_used,
                     "latency_ms": (time.perf_counter() - started_at) * 1000.0,
                 },
@@ -980,9 +1178,40 @@ class PrimeKGExtractor:
                 yield edge
 
     def _relation_allowed(self, edge: KGEdge, allowed_relations: set[str] | None) -> bool:
-        if allowed_relations is None or not allowed_relations:
+        if allowed_relations is None:
             return True
-        return edge.relation.lower() in allowed_relations or edge.display_relation.lower() in allowed_relations
+        return edge.relation in allowed_relations
+
+    def _collect_two_hop_candidates(
+        self,
+        *,
+        seed_node_ids: set[str],
+        allowed_relations: set[str] | None,
+    ) -> tuple[set[str], set[str], dict[str, int]]:
+        hop1_edge_ids: set[str] = set()
+        hop1_nodes: set[str] = set()
+        for node_id in seed_node_ids:
+            for edge in self._iter_incident_edges(node_id=node_id, allowed_relations=allowed_relations):
+                hop1_edge_ids.add(edge.edge_id)
+                hop1_nodes.update((edge.head, edge.tail))
+
+        hop2_edge_ids: set[str] = set()
+        hop2_nodes: set[str] = set()
+        for node_id in hop1_nodes - seed_node_ids:
+            for edge in self._iter_incident_edges(node_id=node_id, allowed_relations=allowed_relations):
+                hop2_edge_ids.add(edge.edge_id)
+                hop2_nodes.update((edge.head, edge.tail))
+
+        candidate_edge_ids = set(hop1_edge_ids) | set(hop2_edge_ids)
+        candidate_node_ids = set(seed_node_ids) | set(hop1_nodes) | set(hop2_nodes)
+        return candidate_edge_ids, candidate_node_ids, {
+            "hop1_edges": len(hop1_edge_ids),
+            "hop1_nodes": len(hop1_nodes),
+            "hop2_edges": len(hop2_edge_ids - hop1_edge_ids),
+            "hop2_nodes": len(hop2_nodes - hop1_nodes - seed_node_ids),
+            "candidate_edges": len(candidate_edge_ids),
+            "candidate_nodes": len(candidate_node_ids),
+        }
 
     def _compute_personalized_pagerank(self, node_ids: set[str], seed_node_ids: set[str]) -> dict[str, float]:
         if not node_ids:
@@ -1325,7 +1554,9 @@ class AgenticRetriever:
         pubmed_api_key: str | None = None,
         pubmed_cache_path: Path | None = None,
         scispacy_model: str = DEFAULT_SCISPACY_MODEL,
+        use_relation_filter: bool = True,
         relation_filter: set[str] | None = None,
+        relation_filter_overrides: dict[str, set[str]] | None = None,
         linker: EntityLinker | None = None,
         kg_extractor: PrimeKGExtractor | None = None,
         pubmed: PubMedRetriever | None = None,
@@ -1337,7 +1568,9 @@ class AgenticRetriever:
             primekg_path=resolved_primekg_path,
             pubmed_cache_path=resolved_cache_path,
             scispacy_model=scispacy_model,
+            use_relation_filter=use_relation_filter,
             relation_filter=relation_filter,
+            relation_filter_overrides=relation_filter_overrides,
             pubmed_api_key=pubmed_api_key,
         )
         self.linker = linker or EntityLinker(scispacy_model=scispacy_model)
@@ -1345,11 +1578,15 @@ class AgenticRetriever:
         self.pubmed = pubmed or PubMedRetriever(api_key=pubmed_api_key, cache_path=resolved_cache_path)
         self.event_logger = StructuredLogger("layer1_retrieval", DEFAULT_LOG_DIR)
 
-    def retrieve(self, question: str) -> EvidenceBundle:
+    def retrieve(self, question: str, question_type_hint: str | None = None) -> EvidenceBundle:
         """Transform a raw question into a fully-typed EvidenceBundle."""
 
         started_at = time.perf_counter()
-        question_type = self._classify_question_type(question)
+        question_type = (
+            infer_question_type(record={"question_type": question_type_hint}, question=question, fallback_label="factoid")
+            if question_type_hint
+            else self._classify_question_type(question)
+        )
 
         entity_start = time.perf_counter()
         question_entities = self.linker.link(question)
@@ -1357,13 +1594,16 @@ class AgenticRetriever:
         entity_latency_ms = (time.perf_counter() - entity_start) * 1000.0
 
         kg_start = time.perf_counter()
-        relation_filter = self.config.relation_filter or QUESTION_TYPE_RELATION_FILTERS.get(question_type) or None
         subgraph_edges = self.kg_extractor.extract_2hop(
             seed_entities=question_entities,
             top_k=self.config.primekg_top_k,
-            relation_filter=relation_filter,
+            relation_filter=self.config.relation_filter,
+            question_type=question_type,
+            use_relation_filter=self.config.use_relation_filter,
+            relation_filter_overrides=self.config.relation_filter_overrides,
         )
         kg_latency_ms = (time.perf_counter() - kg_start) * 1000.0
+        relation_filter_stats = dict(self.kg_extractor.last_relation_filter_stats)
 
         pubmed_start = time.perf_counter()
         pubmed_passages = self.pubmed.retrieve(question, k=self.config.pubmed_top_k)
@@ -1381,8 +1621,10 @@ class AgenticRetriever:
             "primekg_loaded": bool(self.kg_extractor.graph),
             "pubmed_cache_path": str(self.config.pubmed_cache_path),
             "question_type": question_type,
+            "question_type_hint": question_type_hint,
             "entity_linker_backend": self.linker.backend_used,
             "pubmed_backend": self.pubmed.backend_used,
+            "relation_filter": relation_filter_stats,
             "backend_used": {
                 "entity_linker": self.linker.backend_used,
                 "primekg": self.kg_extractor.backend_used,
@@ -1396,6 +1638,7 @@ class AgenticRetriever:
                 "entity_count": len(question_entities),
                 "edge_count": len(subgraph_edges),
                 "pubmed_count": len(pubmed_passages),
+                "relation_filter": relation_filter_stats,
                 "backend_used": metadata["backend_used"],
                 "latency_ms": total_latency_ms,
             },
@@ -1411,13 +1654,7 @@ class AgenticRetriever:
         )
 
     def _classify_question_type(self, question: str) -> QuestionType:
-        normalized_question = question.lower()
-        for question_type, patterns in QUESTION_TYPE_PATTERNS.items():
-            if question_type in {"factoid", "other"}:
-                continue
-            if any(pattern in normalized_question for pattern in patterns):
-                return question_type
-        return "factoid"
+        return infer_question_type(question=question, fallback_label="factoid")  # type: ignore[return-value]
 
 
 __all__ = ["AgenticRetriever", "EntityLinker", "PrimeKGExtractor", "PubMedRetriever"]

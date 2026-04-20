@@ -268,6 +268,9 @@ def build_trm_dataset_arrays(
         puzzle_indices=np.arange(total_examples + 1, dtype=np.int32),
         group_indices=np.arange(total_examples + 1, dtype=np.int32),
         metadata={
+            "codebook_version": getattr(embedder, "codebook_version", None),
+            "frozen_codebook_path": getattr(embedder, "frozen_codebook_path", None),
+            "frozen_codebook_metadata": getattr(embedder, "frozen_codebook_metadata", None),
             "pad_id": pad_id,
             "ignore_label_id": ignore_label_id,
             "blank_identifier_id": 0,

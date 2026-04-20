@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 
 from src.layers.layer2_embedder import DEFAULT_PAD_IDENTIFIER, MedicalGraphEmbedder
+from src.layers.vq_artifacts import estimate_token_stability, inspect_codebook_usage, save_codebook_artifact
 from src.schemas import EvidenceBundle
 
 
@@ -158,3 +159,53 @@ def test_medical_graph_embedder_pretrain_vq_smoke() -> None:
     assert history[0]["loss"] >= 0.0
     assert history[0]["reconstruction_loss"] >= 0.0
     assert history[0]["commit_loss"] >= 0.0
+
+
+def test_frozen_codebook_artifact_reload_is_token_stable(tmp_path) -> None:
+    embedder = build_embedder()
+    samples = [
+        torch.linspace(float(index), float(index) + 1.0, steps=64, dtype=torch.float32).reshape(1, 64)
+        for index in range(1000)
+    ]
+
+    history = embedder.pretrain_vq(samples, epochs=1, lr=1e-3)
+    assert history[-1]["loss"] >= 0.0
+
+    probe_vectors = torch.stack(
+        [
+            torch.linspace(0.1, 0.9, steps=64, dtype=torch.float32),
+            torch.linspace(1.1, 1.9, steps=64, dtype=torch.float32),
+            torch.linspace(2.1, 2.9, steps=64, dtype=torch.float32),
+        ],
+        dim=0,
+    )
+    usage_stats = inspect_codebook_usage(probe_vectors, embedder.vq.codebook.weight.detach().cpu())
+    stability_before = estimate_token_stability(probe_vectors, embedder.vq.codebook.weight.detach().cpu(), repeats=2)
+    metadata = embedder.build_codebook_metadata(num_subgraphs_seen=1000, seed=42)
+    save_codebook_artifact(
+        tmp_path,
+        codebook_weight=embedder.vq.codebook.weight.detach().cpu(),
+        metadata=metadata,
+        stats={
+            "usage_counts_total": usage_stats["usage_counts"],
+            "top_used_clusters": usage_stats["top_used_clusters"],
+            "unused_clusters": usage_stats["unused_clusters"][:10],
+            "dead_code_ratio": usage_stats["dead_code_ratio"],
+            "last_token_stability": stability_before,
+        },
+        progress={
+            "status": "completed",
+            "subgraphs_seen": 1000,
+            "elapsed_sec": 0.0,
+            "loss": history[-1]["loss"],
+        },
+        extra_state=embedder.export_codebook_state(),
+    )
+
+    reloaded = build_embedder()
+    loaded_metadata = reloaded.load_frozen_codebook(tmp_path)
+    first_ids = reloaded.vq(probe_vectors)[1]
+    second_ids = reloaded.vq(probe_vectors)[1]
+
+    assert loaded_metadata["codebook_version"] == metadata["codebook_version"]
+    assert torch.equal(first_ids, second_ids)

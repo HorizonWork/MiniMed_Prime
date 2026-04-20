@@ -20,10 +20,9 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.layers.layer1_retrieval import (  # noqa: E402
     AgenticRetriever,
     DEFAULT_PRIMEKG_TOP_K,
-    QUESTION_TYPE_PATTERNS,
-    QUESTION_TYPE_RELATION_FILTERS,
 )
 from src.layers.layer2_embedder import MedicalGraphEmbedder  # noqa: E402
+from src.retrieval import QUESTION_TYPE_PATTERNS, infer_question_type  # noqa: E402
 from src.schemas import EvidenceBundle, KGEdge, PubMedPassage, QuestionEntity  # noqa: E402
 from src.training.medreason_adapter import (  # noqa: E402
     DEFAULT_HEURISTIC_SELECTOR_NAME,
@@ -75,7 +74,9 @@ class TraceConfig:
     primekg_path: Path = Path("data/kg/primekg")
     pubmed_cache_path: Path = Path("data/pubmed_cache.jsonl")
     pubmed_api_key: str | None = None
+    use_relation_filter: bool = True
     relation_filter: set[str] | None = None
+    relation_filter_overrides: dict[str, set[str]] | None = None
     device: str = "cpu"
     max_len: int = DEFAULT_TRM_SEQ_LEN
     coverage_top_k: int = DEFAULT_COVERAGE_TOP_K
@@ -154,13 +155,13 @@ def trace_one_sample(
 
     started = time.perf_counter()
     try:
-        question_type = retriever._classify_question_type(example.question)
+        question_type = infer_question_type(record=raw_record, question=example.question, fallback_label="factoid")
         trace["question_type"] = _stage(
             started,
             "ok",
             {
                 "predicted": question_type,
-                "backend": "rule_based",
+                "backend": "shared_inference",
                 "heuristic_path": _matched_question_type_patterns(example.question, question_type),
                 "confidence": None,
                 "notes": [],
@@ -196,18 +197,26 @@ def trace_one_sample(
         trace["entity_extraction"] = _stage(started, "fail", {"entities": [], "missing_entities": []}, exc)
         question_entities = []
 
-    relation_filter = _effective_relation_filter(config, question_type)
     started = time.perf_counter()
     try:
-        retrieval_preview = _primekg_retrieval_preview(
-            retriever=retriever,
-            seed_entities=question_entities,
-            relation_filter=relation_filter,
-        )
         subgraph_edges = retriever.kg_extractor.extract_2hop(
             seed_entities=question_entities,
             top_k=getattr(retriever.config, "primekg_top_k", DEFAULT_PRIMEKG_TOP_K),
-            relation_filter=relation_filter,
+            relation_filter=config.relation_filter,
+            question_type=question_type,
+            use_relation_filter=config.use_relation_filter,
+            relation_filter_overrides=config.relation_filter_overrides,
+        )
+        relation_filter_stats = dict(getattr(retriever.kg_extractor, "last_relation_filter_stats", {}) or {})
+        preview_allowed_relations = (
+            None
+            if relation_filter_stats.get("fallback_stage") in {"disabled", "original_behavior"}
+            else set(relation_filter_stats.get("matched_relations") or [])
+        )
+        retrieval_preview = _primekg_retrieval_preview(
+            retriever=retriever,
+            seed_entities=question_entities,
+            relation_filter=preview_allowed_relations,
         )
         retrieved_nodes = _nodes_from_edges(subgraph_edges)
         status = "ok" if subgraph_edges else "fail"
@@ -216,8 +225,10 @@ def trace_one_sample(
             status,
             {
                 "seed_node_ids": [entity.primekg_node_id for entity in question_entities if entity.primekg_node_id],
-                "relation_filter": sorted(relation_filter or []),
-                "relation_filter_active": bool(relation_filter),
+                "relation_filter_requested": relation_filter_stats.get("requested_relations", []),
+                "relation_filter_matched": relation_filter_stats.get("matched_relations", []),
+                "relation_filter_active": bool(relation_filter_stats.get("use_relation_filter", config.use_relation_filter)),
+                "relation_filter_stats": relation_filter_stats,
                 "hop1_nodes": retrieval_preview["hop1_nodes"],
                 "hop1_edges": retrieval_preview["hop1_edges"],
                 "hop2_nodes": retrieval_preview["hop2_nodes"],
@@ -238,7 +249,9 @@ def trace_one_sample(
             "fail",
             {
                 "seed_node_ids": [entity.primekg_node_id for entity in question_entities if entity.primekg_node_id],
-                "relation_filter": sorted(relation_filter or []),
+                "relation_filter_requested": [],
+                "relation_filter_matched": [],
+                "relation_filter_active": bool(config.use_relation_filter),
                 "retrieved_nodes": 0,
                 "retrieved_edges": 0,
                 "ppr_topk": int(getattr(retriever.config, "primekg_top_k", DEFAULT_PRIMEKG_TOP_K)),
@@ -287,7 +300,6 @@ def trace_one_sample(
         subgraph_edges=subgraph_edges,
         pubmed_passages=pubmed_passages,
         retriever=retriever,
-        relation_filter=relation_filter,
     )
 
     started = time.perf_counter()
@@ -513,6 +525,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pubmed-cache-path", type=Path, default=Path("data/pubmed_cache.jsonl"))
     parser.add_argument("--pubmed-api-key", default=None)
     parser.add_argument("--relation-filter", default=None, help="Comma-separated PrimeKG relations; omit to use question-type filter.")
+    parser.add_argument("--disable-relation-filter", action="store_true", help="Disable question-type-aware relation filtering.")
+    parser.add_argument(
+        "--relation-filter-override",
+        action="append",
+        default=[],
+        help="Repeatable question_type=rel1,rel2 override that replaces the routed relation set for one question type.",
+    )
     parser.add_argument("--device", default="cpu", help="Tensorization device.")
     parser.add_argument("--max-len", type=int, default=DEFAULT_TRM_SEQ_LEN)
     parser.add_argument("--coverage-top-k", type=int, default=DEFAULT_COVERAGE_TOP_K)
@@ -540,6 +559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.relation_filter
         else None
     )
+    relation_filter_overrides = _parse_relation_filter_overrides(args.relation_filter_override)
     config = TraceConfig(
         source=args.source,
         split=split,
@@ -554,7 +574,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         primekg_path=args.primekg_path,
         pubmed_cache_path=args.pubmed_cache_path,
         pubmed_api_key=args.pubmed_api_key,
+        use_relation_filter=not args.disable_relation_filter,
         relation_filter=relation_filter,
+        relation_filter_overrides=relation_filter_overrides,
         device=args.device,
         max_len=args.max_len,
         coverage_top_k=args.coverage_top_k,
@@ -580,6 +602,10 @@ def _new_trace(config: TraceConfig) -> dict[str, Any]:
     config_payload["primekg_path"] = str(config_payload["primekg_path"])
     config_payload["pubmed_cache_path"] = str(config_payload["pubmed_cache_path"])
     config_payload["relation_filter"] = sorted(config.relation_filter or [])
+    config_payload["relation_filter_overrides"] = {
+        question_type: sorted(relations)
+        for question_type, relations in sorted((config.relation_filter_overrides or {}).items())
+    }
     return {
         "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -597,7 +623,9 @@ def _build_retriever(config: TraceConfig) -> AgenticRetriever:
         primekg_path=KaggleEnv.path(config.primekg_path),
         pubmed_api_key=config.pubmed_api_key,
         pubmed_cache_path=KaggleEnv.ensure_writeable(KaggleEnv.path(config.pubmed_cache_path)),
+        use_relation_filter=config.use_relation_filter,
         relation_filter=config.relation_filter,
+        relation_filter_overrides=config.relation_filter_overrides,
     )
 
 
@@ -665,11 +693,17 @@ def _matched_question_type_patterns(question: str, question_type: str) -> list[s
     return [pattern for pattern in QUESTION_TYPE_PATTERNS.get(question_type, ()) if pattern in normalized]
 
 
-def _effective_relation_filter(config: TraceConfig, question_type: str) -> set[str] | None:
-    if config.relation_filter is not None:
-        return set(config.relation_filter)
-    default_filter = QUESTION_TYPE_RELATION_FILTERS.get(question_type)
-    return set(default_filter) if default_filter else None
+def _parse_relation_filter_overrides(values: Sequence[str]) -> dict[str, set[str]] | None:
+    overrides: dict[str, set[str]] = {}
+    for raw_value in values:
+        question_type, separator, relations = raw_value.partition("=")
+        if not separator:
+            raise ValueError(f"Invalid --relation-filter-override value: {raw_value!r}")
+        parsed_relations = {relation.strip() for relation in relations.split(",") if relation.strip()}
+        if not question_type.strip() or not parsed_relations:
+            raise ValueError(f"Invalid --relation-filter-override value: {raw_value!r}")
+        overrides[question_type.strip()] = parsed_relations
+    return overrides or None
 
 
 def _entity_trace(entity: QuestionEntity, *, backend: str) -> dict[str, Any]:
@@ -711,7 +745,7 @@ def _primekg_retrieval_preview(
             "candidate_nodes": 0,
             "candidate_edges": 0,
         }
-    allowed_relations = {relation.lower() for relation in relation_filter} if relation_filter else None
+    allowed_relations = set(relation_filter) if relation_filter is not None else None
     hop1_edges: dict[str, KGEdge] = {}
     hop1_nodes: set[str] = set()
     for node_id in seed_node_ids:
@@ -746,14 +780,13 @@ def _build_evidence_bundle(
     subgraph_edges: Sequence[KGEdge],
     pubmed_passages: Sequence[PubMedPassage],
     retriever: AgenticRetriever,
-    relation_filter: set[str] | None,
 ) -> EvidenceBundle:
     metadata = {
         "question_type": question_type,
         "entity_count": len(question_entities),
         "edge_count": len(subgraph_edges),
         "pubmed_count": len(pubmed_passages),
-        "relation_filter": sorted(relation_filter or []),
+        "relation_filter": dict(getattr(retriever.kg_extractor, "last_relation_filter_stats", {}) or {}),
         "entity_linker_backend": getattr(retriever.linker, "backend_used", "unknown"),
         "primekg_backend": getattr(retriever.kg_extractor, "backend_used", "unknown"),
         "pubmed_backend": getattr(retriever.pubmed, "backend_used", "unknown"),
@@ -1150,6 +1183,9 @@ def _token_type_counts(node_mapping: Mapping[Any, Any], *, pad_id: int) -> dict[
 
 
 def _codebook_version(embedder: Any) -> str:
+    explicit_version = getattr(embedder, "codebook_version", None)
+    if explicit_version:
+        return str(explicit_version)
     size = getattr(embedder, "codebook_size", None)
     return f"deterministic_vq:{size}" if size is not None else "unknown"
 

@@ -1,7 +1,7 @@
 """Layer implementations for MiniMed Prime."""
 
 from .layer1_retrieval import AgenticRetriever, EntityLinker, PrimeKGExtractor, PubMedRetriever
-from .layer2_embedder import MedicalGraphEmbedder
+from .layer2_embedder import MedicalGraphEmbedder, load_frozen_codebook
 from .layer3_trm import TRMReasoner
 from .layer4_judges import (
     AnswerFaithfulnessGuardian,
@@ -23,6 +23,7 @@ __all__ = [
     "PrimeKGExtractor",
     "PubMedRetriever",
     "MedicalGraphEmbedder",
+    "load_frozen_codebook",
     "TRMReasoner",
     "AnswerFaithfulnessGuardian",
     "EntityValidationResult",

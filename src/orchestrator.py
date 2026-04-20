@@ -111,7 +111,9 @@ class SystemConfig:
     pubmed_cache_path: Path = KaggleEnv.ensure_writeable(KaggleEnv.path("data/pubmed_cache.jsonl"))
     pubmed_api_key: str | None = None
     scispacy_model: str = "en_core_sci_lg"
+    use_relation_filter: bool = True
     relation_filter: set[str] | None = None
+    relation_filter_overrides: dict[str, set[str]] | None = None
 
     embedder_hidden_dim: int = 256
     embedder_codebook_size: int = 4096
@@ -122,6 +124,9 @@ class SystemConfig:
     sapbert_model_name: str | None = field(default_factory=_default_sapbert_model_path)
     medcpt_article_model_name: str | None = field(default_factory=lambda: _default_existing_path(DEFAULT_MEDCPT_ARTICLE_MODEL_PATH))
     embedder_device: str = "cpu"
+    embedder_frozen_codebook_path: str | None = None
+    embedder_allow_codebook_fallback: bool = True
+    embedder_strict_source_graph_signature: bool = False
 
     trm_model_path: str = field(default_factory=_default_trm_model_path)
     trm_repo_path: str | None = field(default_factory=_default_trm_repo_path)
@@ -189,7 +194,9 @@ class MedicalReasoningSystemV3:
             pubmed_api_key=config.pubmed_api_key,
             pubmed_cache_path=config.pubmed_cache_path,
             scispacy_model=config.scispacy_model,
+            use_relation_filter=config.use_relation_filter,
             relation_filter=config.relation_filter,
+            relation_filter_overrides=config.relation_filter_overrides,
         )
         self.embedder = config.embedder_component or MedicalGraphEmbedder(
             hidden_dim=config.embedder_hidden_dim,
@@ -201,6 +208,10 @@ class MedicalReasoningSystemV3:
             sapbert_model_name=config.sapbert_model_name or resolved_sapbert_path,
             medcpt_article_model_name=config.medcpt_article_model_name,
             device=config.embedder_device,
+            primekg_path=config.primekg_path,
+            frozen_codebook_path=config.embedder_frozen_codebook_path,
+            allow_codebook_fallback=config.embedder_allow_codebook_fallback,
+            strict_source_graph_signature=config.embedder_strict_source_graph_signature,
         )
         self.trm = config.trm_component or TRMReasoner(
             model_path=resolved_trm_model_path,
@@ -479,11 +490,13 @@ class MedicalReasoningSystemV3:
         question_type = self.retriever._classify_question_type(question)
         question_entities = self.retriever.linker.link(question)
         question_entities = self.retriever.kg_extractor.resolve_seed_entities(question_entities)
-        relation_filter = self.retriever.config.relation_filter or None
         subgraph_edges = self.retriever.kg_extractor.extract_2hop(
             seed_entities=question_entities,
             top_k=self.retriever.config.primekg_top_k,
-            relation_filter=relation_filter,
+            relation_filter=self.retriever.config.relation_filter,
+            question_type=question_type,
+            use_relation_filter=bool(getattr(self.retriever.config, "use_relation_filter", True)),
+            relation_filter_overrides=getattr(self.retriever.config, "relation_filter_overrides", None),
         )
         pubmed_passages = self._cached_pubmed_passages(question)
         metadata = {
@@ -493,6 +506,7 @@ class MedicalReasoningSystemV3:
             "edge_count": len(subgraph_edges),
             "pubmed_count": len(pubmed_passages),
             "pubmed_cache_path": str(self.retriever.config.pubmed_cache_path),
+            "relation_filter": dict(getattr(self.retriever.kg_extractor, "last_relation_filter_stats", {})),
         }
         return EvidenceBundle(
             question_text=question,
