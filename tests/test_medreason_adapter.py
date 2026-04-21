@@ -252,7 +252,7 @@ def test_prepare_medreason_seed_jsonl_writes_evidence_and_gold_edges(tmp_path: P
         split=None,
     )
 
-    payload = json.loads(output_path.read_text(encoding="utf-8").strip())
+    payload = json.loads(result.output_path.read_text(encoding="utf-8").strip())
     assert result.records_saved == 1
     assert payload["gold_edge_ids"] == ["E_22104", "E_08812"]
     assert payload["evidence"]["question_text"] == "Which H pylori antibiotic interacts with warfarin?"
@@ -307,7 +307,7 @@ def test_prepare_medreason_seed_jsonl_records_grounding_metadata_for_determinist
         edge_mapper_backend="heuristic",
     )
 
-    payload = json.loads(output_path.read_text(encoding="utf-8").strip())
+    payload = json.loads(result.output_path.read_text(encoding="utf-8").strip())
     assert result.records_saved == 1
     assert payload["metadata"]["grounding_mode"] == "deterministic_v2"
     assert payload["metadata"]["grounding_backend"] == "deterministic_v2"
@@ -348,7 +348,7 @@ def test_prepare_medreason_seed_jsonl_records_llm_grounding_fallback_when_backen
         llm_model_name="heuristic",
     )
 
-    payload = json.loads(output_path.read_text(encoding="utf-8").strip())
+    payload = json.loads(result.output_path.read_text(encoding="utf-8").strip())
     assert result.records_saved == 1
     assert payload["metadata"]["grounding_mode"] == "llm_assisted_v1"
     assert payload["metadata"]["grounding_backend"] == "deterministic_v2"

@@ -1,5 +1,5 @@
 MiniMed Prime Kaggle source package
-version: 2026-04-21-ticket-020-grounding-ablation-data-only
+version: 2026-04-21-ticket-020-grounding-ablation-data-only-kaggle-test-fix
 notes:
 - Add data-only PrimeKG grounding ablation modes: baseline_current, deterministic_v2, and llm_assisted_v1.
-- Add grounding analysis tooling, runbook, and tests for seed metadata, alias recovery, and fallback behavior.
+- Fix Kaggle/Linux test compatibility by reading seed outputs from result.output_path after Kaggle write-path remapping.
