@@ -11,9 +11,14 @@ from typing import Any, Iterable, Mapping, Sequence, get_args
 
 from src.retrieval import (
     DEFAULT_FALLBACK_RELATIONS,
+    NODE_TYPE_TO_ENTITY_TYPE,
     QUESTION_TYPE_PATTERNS as SHARED_QUESTION_TYPE_PATTERNS,
     QUESTION_TYPE_TO_RELATIONS,
     infer_question_type,
+    node_lookup_keys,
+    normalize_basic_text,
+    normalize_lookup_text,
+    parse_node_cuis,
     resolve_relation_filter,
     summarize_relation_filter_stats,
 )
@@ -80,15 +85,6 @@ QUESTION_TYPE_RELATION_FILTERS: dict[QuestionType, set[str]] = {
     "other": set(DEFAULT_FALLBACK_RELATIONS),
 }
 
-NODE_TYPE_TO_ENTITY_TYPE = {
-    "disease": "disease",
-    "drug": "drug",
-    "protein": "protein",
-    "phenotype": "symptom",
-    "symptom": "symptom",
-    "anatomy": "anatomy",
-}
-
 SOURCE_RELIABILITY_LOOKUP = {
     "drugbank": 0.95,
     "drugcentral": 0.94,
@@ -123,12 +119,15 @@ ENTITY_TYPE_LEXICON = {
         "stroke": "C0038454",
         "atrial fibrillation": "C0004238",
         "diabetes": "C0011849",
+        "helicobacter pylori": "C0019163",
+        "h pylori": "C0019163",
         "hypertension": "C0020538",
         "myocardial infarction": "C0027051",
         "pneumonia": "C0032285",
         "asthma": "C0004096",
         "heart failure": "C0018801",
         "covid-19": "C5203670",
+        "typhoid": "C0041466",
     },
     "symptom": {
         "fever": "C0015967",
@@ -139,11 +138,16 @@ ENTITY_TYPE_LEXICON = {
         "nausea": "C0027497",
     },
     "anatomy": {
+        "colle's fascia": None,
+        "colles fascia": None,
+        "common hepatic artery": None,
         "liver": "C0023884",
         "kidney": "C0022646",
         "heart": "C0018787",
         "lung": "C0024109",
         "brain": "C0006104",
+        "right gastroepiploic artery": None,
+        "urogenital diaphragm": None,
     },
     "protein": {
         "egfr": "C3812682",
@@ -471,7 +475,8 @@ class EntityLinker:
         return entities
 
     def _iter_candidate_phrases(self, text: str) -> Iterable[str]:
-        tokens = re.findall(r"[A-Za-z0-9-]+", text.lower())
+        tokens = [normalize_lookup_text(token) for token in re.findall(r"[A-Za-z0-9]+(?:[.'-][A-Za-z0-9]+)*", text.lower())]
+        tokens = [token for token in tokens if token]
         for ngram_size in range(self.config.max_ngram, 0, -1):
             for start_index in range(0, len(tokens) - ngram_size + 1):
                 ngram_tokens = tokens[start_index : start_index + ngram_size]
@@ -599,7 +604,8 @@ class PrimeKGExtractor:
             candidate_ids: set[str] = set()
             if entity.cui:
                 candidate_ids.update(self.node_cui_index.get(entity.cui.lower(), set()))
-            candidate_ids.update(self.node_name_index.get(self._normalize_text(entity.surface), set()))
+            for lookup_key in node_lookup_keys(entity.surface):
+                candidate_ids.update(self.node_name_index.get(lookup_key, set()))
 
             selected_node_id = self._select_best_node(candidate_ids=candidate_ids, entity=entity)
             resolved_entities.append(entity.model_copy(update={"primekg_node_id": selected_node_id}))
@@ -903,8 +909,8 @@ class PrimeKGExtractor:
                 self.graph.add_node(tail_id, name=tail_name, node_type=tail_type)
                 self.graph.add_edge(head_id, tail_id, key=edge.edge_id, edge_id=edge.edge_id)
 
-                self.node_name_index[self._normalize_text(head_name)].add(head_id)
-                self.node_name_index[self._normalize_text(tail_name)].add(tail_id)
+                self._index_node_lookup(head_id, head_name)
+                self._index_node_lookup(tail_id, tail_name)
                 if head_cui_column is not None:
                     head_cui = self._normalize_text(self._string_or_fallback(getattr(row, head_cui_column), fallback=""))
                     if head_cui:
@@ -954,9 +960,17 @@ class PrimeKGExtractor:
             node_name_column = self._resolve_column(nodes_header, ("node_name", "name"))
             node_type_column = self._resolve_column(nodes_header, ("node_type", "type"))
             node_source_column = self._resolve_column(nodes_header, ("node_source", "source"), required=False)
+            node_cui_column = self._resolve_column(nodes_header, ("node_cui", "cui", "umls_cui", "umls_id"), required=False)
             node_usecols = [
                 column
-                for column in (node_index_column, node_id_column, node_name_column, node_type_column, node_source_column)
+                for column in (
+                    node_index_column,
+                    node_id_column,
+                    node_name_column,
+                    node_type_column,
+                    node_source_column,
+                    node_cui_column,
+                )
                 if column is not None
             ]
             nodes_frame = pd.read_csv(nodes_path, usecols=node_usecols, dtype=str, keep_default_na=False)
@@ -965,6 +979,7 @@ class PrimeKGExtractor:
             node_name_column = self._resolve_column(nodes_frame, ("node_name", "name"))
             node_type_column = self._resolve_column(nodes_frame, ("node_type", "type"))
             node_source_column = self._resolve_column(nodes_frame, ("node_source", "source"), required=False)
+            node_cui_column = self._resolve_column(nodes_frame, ("node_cui", "cui", "umls_cui", "umls_id"), required=False)
             node_records: dict[str, dict[str, str]] = {}
             for row in nodes_frame.itertuples(index=False):
                 node_index = self._node_index_key(getattr(row, node_index_column))
@@ -977,6 +992,11 @@ class PrimeKGExtractor:
                         self._string_or_fallback(getattr(row, node_source_column), fallback="primekg")
                         if node_source_column is not None
                         else "primekg"
+                    ),
+                    "cui": (
+                        self._string_or_fallback(getattr(row, node_cui_column), fallback="")
+                        if node_cui_column is not None
+                        else ""
                     ),
                 }
 
@@ -1045,8 +1065,8 @@ class PrimeKGExtractor:
                     self.graph.add_node(head_id, name=head_record["name"], node_type=head_record["type"])
                     self.graph.add_node(tail_id, name=tail_record["name"], node_type=tail_record["type"])
                     self.graph.add_edge(head_id, tail_id, key=edge.edge_id, edge_id=edge.edge_id)
-                    self.node_name_index[self._normalize_text(head_record["name"])].add(head_id)
-                    self.node_name_index[self._normalize_text(tail_record["name"])].add(tail_id)
+                    self._index_node_lookup(head_id, head_record["name"], head_record.get("cui", ""))
+                    self._index_node_lookup(tail_id, tail_record["name"], tail_record.get("cui", ""))
                     loaded_edges += 1
                 if edge_limit is not None and loaded_edges >= edge_limit:
                     break
@@ -1262,6 +1282,12 @@ class PrimeKGExtractor:
         normalized_node_type = NODE_TYPE_TO_ENTITY_TYPE.get(node_type, "other")
         return entity_type == normalized_node_type or entity_type == "other"
 
+    def _index_node_lookup(self, node_id: str, node_name: str, node_cui: str = "") -> None:
+        for lookup_key in node_lookup_keys(node_name):
+            self.node_name_index[lookup_key].add(node_id)
+        for normalized_cui in parse_node_cuis(node_cui):
+            self.node_cui_index[normalized_cui].add(node_id)
+
     @staticmethod
     def _resolve_column(frame: pd.DataFrame, candidates: Sequence[str], required: bool = True) -> str | None:
         for column_name in candidates:
@@ -1282,7 +1308,7 @@ class PrimeKGExtractor:
 
     @staticmethod
     def _normalize_text(value: str) -> str:
-        return re.sub(r"\s+", " ", value.strip().lower())
+        return normalize_basic_text(value)
 
     @staticmethod
     def _string_or_fallback(value: Any, fallback: str) -> str:

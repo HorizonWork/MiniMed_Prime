@@ -7,18 +7,22 @@ from src.training.trm_dataset_builder import (
     save_trm_dataset,
 )
 from src.training.medreason_adapter import (
+    DEFAULT_GROUNDING_MODE,
     DEFAULT_MEDREASON_SOURCE,
     EdgeMappingDiagnostics,
     EdgeSelection,
     HF_MEDREASON_SOURCE,
+    GROUNDING_MODES,
     MedReasonSeedResult,
     RawMedReasonExample,
+    build_seed_evidence_bundle,
     heuristic_map_reasoning_to_edges,
     load_medreason_records,
     map_medreason_edges,
     normalize_medreason_record,
     prepare_medreason_seed_jsonl,
     resolve_edge_mapper_config,
+    resolve_grounding_mode_config,
 )
 from src.training.seed_quality import (
     DEFAULT_COVERAGE_TOP_K,
@@ -45,6 +49,7 @@ from src.training.trm_trainer import (
 
 __all__ = [
     "DEFAULT_MEDREASON_SOURCE",
+    "DEFAULT_GROUNDING_MODE",
     "DEFAULT_COVERAGE_TOP_K",
     "DEFAULT_GOLDISH_BACKEND_PATTERNS",
     "DEFAULT_MIN_GOLDISH_GOLD_EDGE_COVERAGE",
@@ -53,6 +58,7 @@ __all__ = [
     "EdgeMappingDiagnostics",
     "EdgeSelection",
     "HF_MEDREASON_SOURCE",
+    "GROUNDING_MODES",
     "MedReasonSeedResult",
     "RawMedReasonExample",
     "SeedCoverageMetrics",
@@ -64,6 +70,7 @@ __all__ = [
     "TRMTrainingRunResult",
     "TRMTrainingExample",
     "build_trm_dataset_arrays",
+    "build_seed_evidence_bundle",
     "classify_seed_record",
     "compute_seed_coverage",
     "evaluate_reasoner",
@@ -76,6 +83,7 @@ __all__ = [
     "path_to_token_sequence",
     "prepare_medreason_seed_jsonl",
     "resolve_edge_mapper_config",
+    "resolve_grounding_mode_config",
     "resolve_trm_split_dir",
     "save_medical_trm_checkpoint",
     "save_trm_dataset",

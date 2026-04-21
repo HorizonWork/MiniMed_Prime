@@ -11,7 +11,22 @@ QUESTION_TYPE_PATTERNS: dict[str, tuple[str, ...]] = {
     "dosage": ("dose", "dosage", "mg", "mcg", "titrate", "how much"),
     "diagnosis": ("diagnosis", "diagnose", "differential", "most likely", "presents with", "likely condition"),
     "etiology": ("cause", "causes", "caused by", "etiology", "why does", "mechanism"),
-    "factoid": (),
+    "factoid": (
+        "anatomy",
+        "artery",
+        "branch of",
+        "except",
+        "fascia",
+        "formed by",
+        "ligament",
+        "located in",
+        "made up of",
+        "muscle",
+        "nerve",
+        "physiology",
+        "structure",
+        "vein",
+    ),
     "other": (),
 }
 
@@ -59,6 +74,9 @@ QUESTION_TYPE_TO_RELATIONS: dict[str, frozenset[str]] = {
     ),
     "other": frozenset(
         {
+            "anatomy_anatomy",
+            "anatomy_protein_absent",
+            "anatomy_protein_present",
             "contraindication",
             "indication",
             "drug_drug",
@@ -133,7 +151,7 @@ def infer_question_type(
     text_parts = [part for part in (question, option_text) if isinstance(part, str) and part.strip()]
     combined_text = "\n".join(text_parts).strip().lower()
     for question_type, patterns in QUESTION_TYPE_PATTERNS.items():
-        if question_type in {"factoid", "other"}:
+        if question_type == "other":
             continue
         if any(pattern in combined_text for pattern in patterns):
             return question_type

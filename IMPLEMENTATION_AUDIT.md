@@ -86,6 +86,17 @@ python scripts/build_trm_dataset.py --input-jsonl data/trm_seed.jsonl --output-d
 - MedReason raw dataset -> EvidenceBundle -> gold PrimeKG edge IDs da co adapter `scripts/prepare_medreason_seed.py`; ho tro direct edge IDs, heuristic mapping va LLM structured selector. Raw MedReason hien co reasoning text nhung khong co PrimeKG `edge_id` chuan, nen golden labels tot nhat can dung Layer 1 candidate edges + LLM selector; heuristic chi la fallback/smoke-test.
 - Notebook NB3 van la training stub, chua phai runbook train TRM hoan chinh tu MedReason.
 
+## Huong nang cap evidence fusion
+
+- PrimeKG-only khong du de cover anatomy, physiology, definitional facts, structural description, va cac claim moi/chua duoc graph hoa.
+- LLM hien tai khong chi la judge: con dang duoc dung trong edge selector de map raw MedReason -> `gold_edge_ids` khi chay `prepare_medreason_seed.py` voi `edge-mapper llm/auto`.
+- De giam failure mode `gold_mapping=[]` va reject oan cac sample graph-missing, can nang pipeline tu `KG-first` sang `evidence-fusion` gom 3 lane song song:
+  - Graph lane: PrimeKG/UMLS cho relation-heavy va safety-critical reasoning.
+  - Literature lane: PubMed cho entailment, citation, temporal update.
+  - Textbook lane: anatomy, physiology, foundational/definitional knowledge.
+- Can them `question_router`, `textbook_retriever`, `EvidenceBundle v2`, provenance `TEXTBOOK:*`, va sua auditor de chap nhan textbook-supported claims thay vi mac dinh phat unsupported vi thieu edge PrimeKG.
+- Roadmap chi tiet da duoc tach rieng trong `EVIDENCE_FUSION_PHASE_PLAN.md` de lam tai lieu thuc thi theo phase.
+
 ## Logging/readiness audit
 
 - MedReason preprocessing: da co `scripts/prepare_medreason_seed.py` va `src/training/medreason_adapter.py`; log records seen/saved/skipped, retrieval evidence edge count, PubMed count, selected gold edge count, direct/heuristic/LLM mapping diagnostics.

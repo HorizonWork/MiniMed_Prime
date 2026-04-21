@@ -11,9 +11,21 @@ from typing import Any, Iterable, Mapping, Sequence
 from pydantic import BaseModel, Field
 
 from src.layers.layer1_retrieval import AgenticRetriever
-from src.retrieval import infer_question_type
+from src.retrieval import (
+    DEFAULT_GEMINI_GROUNDER,
+    DEFAULT_OPENAI_GROUNDER,
+    DeterministicSeedGrounder,
+    GROUNDING_MODES,
+    LLMAssistedSeedGrounder,
+    PrimeKGNodeCatalog,
+    SeedGrounder,
+    infer_question_type,
+    normalize_basic_text,
+    serialize_grounding_decisions,
+    summarize_grounding_candidates,
+)
 from src.layers.layer4_judges import JudgeBase
-from src.schemas import EvidenceBundle, KGEdge
+from src.schemas import EvidenceBundle, KGEdge, PubMedPassage, QuestionEntity
 from src.training.trm_dataset_builder import parse_reasoning_chain
 from src.utils.kaggle_env import KaggleEnv
 from src.utils.structured_logger import DEFAULT_LOG_DIR, StructuredLogger
@@ -24,6 +36,7 @@ HF_MEDREASON_SOURCE = "UCSC-VLAA/MedReason"
 DEFAULT_OPENAI_EDGE_SELECTOR = "gpt-4o-mini"
 DEFAULT_GEMINI_EDGE_SELECTOR = "gemini-2.5-flash"
 DEFAULT_HEURISTIC_SELECTOR_NAME = "heuristic"
+DEFAULT_GROUNDING_MODE = "baseline_current"
 DEFAULT_LOCAL_TRAIN_FRACTION = 0.90
 DEFAULT_LOCAL_VALIDATION_FRACTION = 0.05
 DEFAULT_MAX_LLM_CANDIDATE_EDGES = 80
@@ -184,6 +197,7 @@ def prepare_medreason_seed_jsonl(
     edge_mapper_backend: str = "auto",
     llm_model_name: str = DEFAULT_HEURISTIC_SELECTOR_NAME,
     llm_device: str = "cpu",
+    grounding_mode: str = DEFAULT_GROUNDING_MODE,
     allow_empty_gold: bool = False,
 ) -> MedReasonSeedResult:
     started_at = time.perf_counter()
@@ -193,9 +207,25 @@ def prepare_medreason_seed_jsonl(
     skipped_path = output_path.with_suffix(".skipped.jsonl")
     records = load_medreason_records(source, split=split, limit=limit)
     effective_backend, effective_llm_model_name = resolve_edge_mapper_config(edge_mapper_backend, llm_model_name)
+    normalized_grounding_mode, effective_grounding_llm_model = resolve_grounding_mode_config(grounding_mode, llm_model_name)
     selector = (
         MedReasonEdgeSelector(model_name=effective_llm_model_name, device=llm_device)
         if effective_backend == "llm"
+        else None
+    )
+    node_catalog = (
+        PrimeKGNodeCatalog.from_primekg_path(retriever.config.primekg_path)
+        if normalized_grounding_mode != "baseline_current"
+        else None
+    )
+    seed_grounder = (
+        _build_seed_grounder(
+            grounding_mode=normalized_grounding_mode,
+            catalog=node_catalog,
+            llm_model_name=effective_grounding_llm_model,
+            llm_device=llm_device,
+        )
+        if node_catalog is not None
         else None
     )
 
@@ -214,7 +244,16 @@ def prepare_medreason_seed_jsonl(
                 example = normalize_medreason_record(record, index=record_index)
                 question_type_hint = _question_type_hint_from_record(record, question=example.question)
                 skip_stage = "retrieval"
-                evidence = retriever.retrieve(example.question, question_type_hint=question_type_hint)
+                evidence = build_seed_evidence_bundle(
+                    question=example.question,
+                    retriever=retriever,
+                    question_type_hint=question_type_hint,
+                    grounding_mode=normalized_grounding_mode,
+                    llm_model_name=effective_grounding_llm_model,
+                    llm_device=llm_device,
+                    node_catalog=node_catalog,
+                    seed_grounder=seed_grounder,
+                )
                 skip_stage = "edge_mapping"
                 edge_ids, diagnostics = map_medreason_edges(
                     example=example,
@@ -253,6 +292,14 @@ def prepare_medreason_seed_jsonl(
                         "source": str(source),
                         "split": split,
                         "record_index": record_index,
+                        "grounding_mode": normalized_grounding_mode,
+                        "grounding_backend": evidence.metadata.get("grounding_backend"),
+                        "entity_grounding": evidence.metadata.get("entity_grounding"),
+                        "unresolved_entities": evidence.metadata.get("unresolved_entities"),
+                        "seed_node_ids": evidence.metadata.get("seed_node_ids"),
+                        "candidate_stats": evidence.metadata.get("candidate_stats"),
+                        "llm_grounding_used": evidence.metadata.get("llm_grounding_used"),
+                        "llm_grounding_fallback_reason": evidence.metadata.get("llm_grounding_fallback_reason"),
                         "edge_mapping": asdict(diagnostics),
                     },
                 }
@@ -323,6 +370,10 @@ def prepare_medreason_seed_jsonl(
             "backend_used": effective_backend,
             "requested_backend": edge_mapper_backend,
             "llm_model_name": effective_llm_model_name if effective_backend == "llm" else None,
+            "grounding_mode": normalized_grounding_mode,
+            "grounding_llm_model_name": (
+                effective_grounding_llm_model if normalized_grounding_mode == "llm_assisted_v1" else None
+            ),
             "latency_ms": result.latency_ms,
         },
     )
@@ -350,6 +401,162 @@ def resolve_edge_mapper_config(edge_mapper_backend: str, llm_model_name: str) ->
         if os.getenv("GEMINI_API_KEY"):
             return "llm", DEFAULT_GEMINI_EDGE_SELECTOR
     return requested_backend, requested_model
+
+
+def resolve_grounding_mode_config(grounding_mode: str, llm_model_name: str) -> tuple[str, str]:
+    normalized_mode = grounding_mode.strip().lower()
+    if normalized_mode not in GROUNDING_MODES:
+        raise ValueError(f"grounding mode must be one of: {', '.join(GROUNDING_MODES)}.")
+    requested_model = _normalize_llm_model_alias((llm_model_name or DEFAULT_HEURISTIC_SELECTOR_NAME).strip())
+    if normalized_mode != "llm_assisted_v1":
+        return normalized_mode, requested_model
+    if _is_real_llm_model_name(requested_model):
+        return normalized_mode, requested_model
+    if os.getenv("OPENAI_API_KEY"):
+        return normalized_mode, DEFAULT_OPENAI_GROUNDER
+    if os.getenv("GEMINI_API_KEY"):
+        return normalized_mode, DEFAULT_GEMINI_GROUNDER
+    return normalized_mode, DEFAULT_HEURISTIC_SELECTOR_NAME
+
+
+def build_seed_evidence_bundle(
+    *,
+    question: str,
+    retriever: AgenticRetriever,
+    question_type_hint: str | None = None,
+    grounding_mode: str = DEFAULT_GROUNDING_MODE,
+    llm_model_name: str = DEFAULT_HEURISTIC_SELECTOR_NAME,
+    llm_device: str = "cpu",
+    node_catalog: PrimeKGNodeCatalog | None = None,
+    seed_grounder: SeedGrounder | None = None,
+) -> EvidenceBundle:
+    normalized_mode, effective_model_name = resolve_grounding_mode_config(grounding_mode, llm_model_name)
+    if normalized_mode == "baseline_current":
+        evidence = retriever.retrieve(question, question_type_hint=question_type_hint)
+        seed_node_ids = [entity.primekg_node_id for entity in evidence.question_entities if entity.primekg_node_id]
+        unresolved_entities = [entity.surface for entity in evidence.question_entities if not entity.primekg_node_id]
+        evidence.metadata.setdefault("grounding_mode", normalized_mode)
+        evidence.metadata.setdefault("grounding_backend", "baseline_current")
+        evidence.metadata.setdefault("entity_grounding", [])
+        evidence.metadata.setdefault("unresolved_entities", unresolved_entities)
+        evidence.metadata.setdefault("seed_node_ids", seed_node_ids)
+        evidence.metadata.setdefault(
+            "candidate_stats",
+            {
+                "entity_count": len(evidence.question_entities),
+                "linked_count": len(seed_node_ids),
+                "unresolved_count": len(unresolved_entities),
+                "avg_candidates": 0.0,
+                "max_candidates": 0,
+                "fuzzy_link_count": 0,
+            },
+        )
+        evidence.metadata.setdefault("llm_grounding_used", False)
+        evidence.metadata.setdefault("llm_grounding_fallback_reason", None)
+        return evidence
+
+    if not hasattr(retriever, "linker") or not hasattr(retriever, "kg_extractor"):
+        raise ValueError("Data-only grounding requires a retriever with linker and kg_extractor components.")
+
+    question_type = (
+        infer_question_type(record={"question_type": question_type_hint}, question=question, fallback_label="factoid")
+        if question_type_hint
+        else infer_question_type(question=question, fallback_label="factoid")
+    )
+    linked_entities = retriever.linker.link(question)
+    catalog = node_catalog or PrimeKGNodeCatalog.from_primekg_path(retriever.config.primekg_path)
+    grounder = seed_grounder or _build_seed_grounder(
+        grounding_mode=normalized_mode,
+        catalog=catalog,
+        llm_model_name=effective_model_name,
+        llm_device=llm_device,
+    )
+    grounding_decisions = grounder.ground(question=question, entities=linked_entities)
+    resolved_entities = _apply_grounding_decisions(linked_entities, grounding_decisions)
+    subgraph_edges = retriever.kg_extractor.extract_2hop(
+        seed_entities=resolved_entities,
+        top_k=retriever.config.primekg_top_k,
+        relation_filter=retriever.config.relation_filter,
+        question_type=question_type,
+        use_relation_filter=retriever.config.use_relation_filter,
+        relation_filter_overrides=retriever.config.relation_filter_overrides,
+    )
+    relation_filter_stats = dict(getattr(retriever.kg_extractor, "last_relation_filter_stats", {}) or {})
+    pubmed_passages: list[PubMedPassage] = []
+    if hasattr(retriever, "pubmed") and getattr(retriever, "pubmed") is not None:
+        pubmed_passages = retriever.pubmed.retrieve(question, k=retriever.config.pubmed_top_k)
+
+    candidate_stats = summarize_grounding_candidates(grounding_decisions)
+    unresolved_entities = [decision.surface for decision in grounding_decisions if decision.linked_node_id is None]
+    seed_node_ids = [decision.linked_node_id for decision in grounding_decisions if decision.linked_node_id is not None]
+    backend_mapping = {
+        "entity_linker": getattr(retriever.linker, "backend_used", "unknown"),
+        "primekg": getattr(retriever.kg_extractor, "backend_used", "unknown"),
+        "pubmed": getattr(getattr(retriever, "pubmed", None), "backend_used", "unknown"),
+        "seed_grounding": getattr(grounder, "backend_used", normalized_mode),
+    }
+    metadata = {
+        "entity_count": len(resolved_entities),
+        "edge_count": len(subgraph_edges),
+        "pubmed_count": len(pubmed_passages),
+        "primekg_loaded": bool(getattr(retriever.kg_extractor, "graph", None)),
+        "pubmed_cache_path": str(getattr(retriever.config, "pubmed_cache_path", "")),
+        "question_type": question_type,
+        "question_type_hint": question_type_hint,
+        "entity_linker_backend": getattr(retriever.linker, "backend_used", "unknown"),
+        "pubmed_backend": getattr(getattr(retriever, "pubmed", None), "backend_used", "unknown"),
+        "relation_filter": relation_filter_stats,
+        "backend_used": backend_mapping,
+        "grounding_mode": normalized_mode,
+        "grounding_backend": getattr(grounder, "backend_used", normalized_mode),
+        "entity_grounding": serialize_grounding_decisions(grounding_decisions),
+        "unresolved_entities": unresolved_entities,
+        "seed_node_ids": seed_node_ids,
+        "candidate_stats": candidate_stats,
+        "llm_grounding_used": bool(getattr(grounder, "llm_used", False)),
+        "llm_grounding_fallback_reason": getattr(grounder, "fallback_reason", None),
+    }
+    return EvidenceBundle(
+        question_text=question,
+        question_type=question_type,  # type: ignore[arg-type]
+        question_entities=resolved_entities,
+        subgraph_edges=subgraph_edges,
+        pubmed_passages=pubmed_passages,
+        metadata=metadata,
+    )
+
+
+def _build_seed_grounder(
+    *,
+    grounding_mode: str,
+    catalog: PrimeKGNodeCatalog,
+    llm_model_name: str,
+    llm_device: str,
+) -> SeedGrounder:
+    if grounding_mode == "deterministic_v2":
+        return DeterministicSeedGrounder(catalog)
+    if grounding_mode == "llm_assisted_v1":
+        return LLMAssistedSeedGrounder(catalog, model_name=llm_model_name, device=llm_device)
+    raise ValueError(f"Unsupported grounding mode: {grounding_mode}")
+
+
+def _apply_grounding_decisions(
+    entities: Sequence[QuestionEntity],
+    decisions: Sequence[Any],
+) -> list[QuestionEntity]:
+    decision_lookup = {
+        (normalize_basic_text(decision.surface), decision.entity_type): decision
+        for decision in decisions
+    }
+    resolved_entities: list[QuestionEntity] = []
+    for entity in entities:
+        decision = decision_lookup.get((normalize_basic_text(entity.surface), entity.entity_type))
+        resolved_entities.append(
+            entity.model_copy(update={"primekg_node_id": getattr(decision, "linked_node_id", None)})
+            if decision is not None
+            else entity.model_copy(deep=True)
+        )
+    return resolved_entities
 
 
 def map_medreason_edges(
@@ -413,7 +620,6 @@ def heuristic_map_reasoning_to_edges(
             fragment
             for fragment in (
                 example.question,
-                example.answer,
                 _flatten_to_text(example.reasoning),
             )
             if fragment
@@ -637,6 +843,14 @@ def _build_skipped_seed_row(
         "mapped_edge_ids": mapped_edge_ids,
         "missing_gold_edges": missing_gold_edges,
         "retrieval_backend_summary": _retrieval_backend_summary(evidence),
+        "grounding_mode": evidence_metadata.get("grounding_mode"),
+        "grounding_backend": evidence_metadata.get("grounding_backend"),
+        "entity_grounding": evidence_metadata.get("entity_grounding") or [],
+        "unresolved_entities": evidence_metadata.get("unresolved_entities") or [],
+        "seed_node_ids": evidence_metadata.get("seed_node_ids") or [],
+        "candidate_stats": evidence_metadata.get("candidate_stats") or {},
+        "llm_grounding_used": bool(evidence_metadata.get("llm_grounding_used")),
+        "llm_grounding_fallback_reason": evidence_metadata.get("llm_grounding_fallback_reason"),
         "skip_stage": skip_stage,
         "skip_reason": skip_reason,
         "reason": skip_reason,
@@ -665,6 +879,7 @@ def _retrieval_backend_summary(evidence: EvidenceBundle | None) -> dict[str, Any
     backend_mapping = backend_used if isinstance(backend_used, Mapping) else {}
     return {
         "entity_linker_backend": evidence.metadata.get("entity_linker_backend") or backend_mapping.get("entity_linker"),
+        "grounding_backend": evidence.metadata.get("grounding_backend") or backend_mapping.get("seed_grounding"),
         "primekg_backend": evidence.metadata.get("primekg_backend") or backend_mapping.get("primekg"),
         "pubmed_backend": evidence.metadata.get("pubmed_backend") or backend_mapping.get("pubmed"),
         "layer1_backend": dict(backend_mapping) if isinstance(backend_used, Mapping) else backend_used,
@@ -821,16 +1036,20 @@ def _normalize_text(text: str) -> str:
 
 
 __all__ = [
+    "DEFAULT_GROUNDING_MODE",
     "DEFAULT_MEDREASON_SOURCE",
     "HF_MEDREASON_SOURCE",
+    "GROUNDING_MODES",
     "EdgeMappingDiagnostics",
     "EdgeSelection",
     "MedReasonSeedResult",
     "RawMedReasonExample",
+    "build_seed_evidence_bundle",
     "heuristic_map_reasoning_to_edges",
     "load_medreason_records",
     "map_medreason_edges",
     "normalize_medreason_record",
     "prepare_medreason_seed_jsonl",
     "resolve_edge_mapper_config",
+    "resolve_grounding_mode_config",
 ]

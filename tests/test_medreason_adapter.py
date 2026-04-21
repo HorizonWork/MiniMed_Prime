@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
-from src.schemas import EvidenceBundle
+from src.layers.layer1_retrieval import PrimeKGExtractor
+from src.schemas import EvidenceBundle, QuestionEntity
 from src.training import (
+    build_seed_evidence_bundle,
     heuristic_map_reasoning_to_edges,
     load_medreason_records,
     map_medreason_edges,
@@ -23,6 +26,45 @@ class FakeRetriever:
         del question_type_hint
         self.questions.append(question)
         return self.bundle
+
+
+class StaticLinker:
+    backend_used = "rule_based"
+
+    def __init__(self, entities):
+        self._entities = list(entities)
+
+    def link(self, text: str):
+        del text
+        return [entity.model_copy(deep=True) for entity in self._entities]
+
+
+class SilentPubMedRetriever:
+    backend_used = "disabled"
+
+    def retrieve(self, question: str, k: int = 0):
+        del question, k
+        return []
+
+
+class GroundingAwareRetriever:
+    def __init__(self, *, primekg_path: Path, entities, use_relation_filter: bool = False) -> None:
+        self.config = SimpleNamespace(
+            primekg_path=primekg_path,
+            pubmed_cache_path=primekg_path / "pubmed_cache.jsonl",
+            primekg_top_k=10,
+            pubmed_top_k=0,
+            use_relation_filter=use_relation_filter,
+            relation_filter=None,
+            relation_filter_overrides=None,
+        )
+        self.linker = StaticLinker(entities)
+        self.kg_extractor = PrimeKGExtractor(primekg_path=primekg_path)
+        self.pubmed = SilentPubMedRetriever()
+
+    def retrieve(self, question: str, question_type_hint: str | None = None) -> EvidenceBundle:
+        del question, question_type_hint
+        raise AssertionError("retrieve() should not be used for data-only grounding modes.")
 
 
 def make_bundle() -> EvidenceBundle:
@@ -70,6 +112,29 @@ def make_bundle() -> EvidenceBundle:
             ],
             "metadata": {},
         }
+    )
+
+
+def write_grounding_primekg_tables(path: Path) -> None:
+    (path / "nodes.csv").write_text(
+        "\n".join(
+            [
+                "node_index,node_id,node_type,node_name,node_source",
+                "1,disease:h_pylori,disease,Helicobacter pylori infectious disease,primekg",
+                "2,disease:gastritis,disease,gastritis,primekg",
+                "3,drug:warfarin,drug,warfarin,drugbank",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (path / "edges.csv").write_text(
+        "\n".join(
+            [
+                "relation,display_relation,x_index,y_index",
+                "disease_disease,associated disease,1,2",
+            ]
+        ),
+        encoding="utf-8",
     )
 
 
@@ -133,6 +198,21 @@ def test_heuristic_map_reasoning_to_edges_without_explicit_edge_ids() -> None:
     assert edge_ids[:2] == ["E_22104", "E_08812"]
 
 
+def test_heuristic_map_reasoning_to_edges_does_not_use_answer_only_mentions() -> None:
+    bundle = make_bundle()
+    example = normalize_medreason_record(
+        {
+            "question": "Which antibiotic is the correct choice?",
+            "answer": "Metronidazole",
+            "reasoning": "The source cites PMID 28472901 but does not name any graph path.",
+        }
+    )
+
+    edge_ids = heuristic_map_reasoning_to_edges(example, bundle)
+
+    assert edge_ids == []
+
+
 def test_map_medreason_edges_combines_direct_and_heuristic_edges() -> None:
     bundle = make_bundle()
     example = normalize_medreason_record(
@@ -176,6 +256,104 @@ def test_prepare_medreason_seed_jsonl_writes_evidence_and_gold_edges(tmp_path: P
     assert result.records_saved == 1
     assert payload["gold_edge_ids"] == ["E_22104", "E_08812"]
     assert payload["evidence"]["question_text"] == "Which H pylori antibiotic interacts with warfarin?"
+
+
+def test_build_seed_evidence_bundle_supports_deterministic_grounding_mode(tmp_path: Path) -> None:
+    write_grounding_primekg_tables(tmp_path)
+    retriever = GroundingAwareRetriever(
+        primekg_path=tmp_path,
+        entities=[QuestionEntity(surface="H pylori", cui=None, primekg_node_id=None, entity_type="disease")],
+    )
+
+    evidence = build_seed_evidence_bundle(
+        question="Most sensitive test for H pylori is-",
+        retriever=retriever,  # type: ignore[arg-type]
+        grounding_mode="deterministic_v2",
+    )
+
+    assert evidence.metadata["grounding_mode"] == "deterministic_v2"
+    assert evidence.metadata["grounding_backend"] == "deterministic_v2"
+    assert evidence.metadata["seed_node_ids"] == ["disease:h_pylori"]
+    assert evidence.metadata["unresolved_entities"] == []
+    assert evidence.question_entities[0].primekg_node_id == "disease:h_pylori"
+
+
+def test_prepare_medreason_seed_jsonl_records_grounding_metadata_for_deterministic_mode(tmp_path: Path) -> None:
+    write_grounding_primekg_tables(tmp_path)
+    source = tmp_path / "medreason.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "question": "Most sensitive test for H pylori is-",
+                "answer": "Biopsy urease test",
+                "reasoning": "Helicobacter pylori infectious disease is associated with gastritis.",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "trm_seed.jsonl"
+    retriever = GroundingAwareRetriever(
+        primekg_path=tmp_path,
+        entities=[QuestionEntity(surface="H pylori", cui=None, primekg_node_id=None, entity_type="disease")],
+    )
+
+    result = prepare_medreason_seed_jsonl(
+        source=source,
+        output_jsonl=output_path,
+        retriever=retriever,  # type: ignore[arg-type]
+        split=None,
+        grounding_mode="deterministic_v2",
+        edge_mapper_backend="heuristic",
+    )
+
+    payload = json.loads(output_path.read_text(encoding="utf-8").strip())
+    assert result.records_saved == 1
+    assert payload["metadata"]["grounding_mode"] == "deterministic_v2"
+    assert payload["metadata"]["grounding_backend"] == "deterministic_v2"
+    assert payload["metadata"]["seed_node_ids"] == ["disease:h_pylori"]
+    assert payload["metadata"]["unresolved_entities"] == []
+    assert payload["metadata"]["candidate_stats"]["linked_count"] == 1
+
+
+def test_prepare_medreason_seed_jsonl_records_llm_grounding_fallback_when_backend_missing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    write_grounding_primekg_tables(tmp_path)
+    source = tmp_path / "medreason.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "question": "Most sensitive test for H pylori is-",
+                "answer": "Biopsy urease test",
+                "reasoning": "Helicobacter pylori infectious disease is associated with gastritis.",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "trm_seed.jsonl"
+    retriever = GroundingAwareRetriever(
+        primekg_path=tmp_path,
+        entities=[QuestionEntity(surface="H pylori", cui=None, primekg_node_id=None, entity_type="disease")],
+    )
+
+    result = prepare_medreason_seed_jsonl(
+        source=source,
+        output_jsonl=output_path,
+        retriever=retriever,  # type: ignore[arg-type]
+        split=None,
+        grounding_mode="llm_assisted_v1",
+        edge_mapper_backend="heuristic",
+        llm_model_name="heuristic",
+    )
+
+    payload = json.loads(output_path.read_text(encoding="utf-8").strip())
+    assert result.records_saved == 1
+    assert payload["metadata"]["grounding_mode"] == "llm_assisted_v1"
+    assert payload["metadata"]["grounding_backend"] == "deterministic_v2"
+    assert payload["metadata"]["llm_grounding_used"] is False
+    assert payload["metadata"]["llm_grounding_fallback_reason"] == "llm_backend_unavailable"
 
 
 def test_prepare_medreason_seed_jsonl_skipped_rows_keep_required_diagnostics(tmp_path: Path) -> None:

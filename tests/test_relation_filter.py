@@ -71,6 +71,24 @@ def test_infer_question_type_supports_puzzle_identifiers_hint() -> None:
     assert inferred == "dosage"
 
 
+def test_infer_question_type_detects_anatomy_factoid_questions() -> None:
+    inferred = infer_question_type(
+        question="The urogenital diaphragm is composed of all of the following except:",
+        fallback_label="other",
+    )
+
+    assert inferred == "factoid"
+
+
+def test_factoid_relation_resolution_keeps_anatomy_edges() -> None:
+    resolution = resolve_relation_filter(
+        question_type="factoid",
+        available_relations={"anatomy_anatomy", "drug_drug"},
+    )
+
+    assert "anatomy_anatomy" in resolution.matched_relations
+
+
 def test_summarize_relation_filter_stats_contains_observability_fields() -> None:
     payload = summarize_relation_filter_stats(
         question_type="drug_interaction",

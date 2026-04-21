@@ -193,6 +193,124 @@ def test_primekg_extractor_loads_edges_nodes_layout(tmp_path: Path) -> None:
     assert list(extractor.edge_lookup.values())[0].tail == "drug:ibuprofen"
 
 
+def test_primekg_extractor_loads_optional_node_cui_from_edges_nodes_layout(tmp_path: Path) -> None:
+    (tmp_path / "nodes.csv").write_text(
+        "\n".join(
+            [
+                "node_index,node_id,node_type,node_name,node_source,node_cui",
+                "1,disease:h_pylori,disease,Helicobacter pylori infectious disease,primekg,C0019163",
+                "2,anatomy:colon,anatomy,Colon,primekg,C0009368",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "edges.csv").write_text(
+        "\n".join(
+            [
+                "relation,display_relation,x_index,y_index",
+                "disease_disease,associated disease,1,1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    extractor = PrimeKGExtractor(primekg_path=tmp_path)
+
+    assert extractor.node_cui_index["c0019163"] == {"disease:h_pylori"}
+
+
+def test_primekg_extractor_resolves_alias_surface_against_generic_disease_suffix(tmp_path: Path) -> None:
+    (tmp_path / "nodes.csv").write_text(
+        "\n".join(
+            [
+                "node_index,node_id,node_type,node_name,node_source",
+                "1,disease:h_pylori,disease,Helicobacter pylori infectious disease,primekg",
+                "2,drug:warfarin,drug,warfarin,drugbank",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "edges.csv").write_text(
+        "\n".join(
+            [
+                "relation,display_relation,x_index,y_index",
+                "disease_disease,associated disease,1,1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    extractor = PrimeKGExtractor(primekg_path=tmp_path)
+    resolved = extractor.resolve_seed_entities(
+        [QuestionEntity(surface="H pylori", cui=None, primekg_node_id=None, entity_type="disease")]
+    )
+
+    assert resolved[0].primekg_node_id == "disease:h_pylori"
+
+
+def test_primekg_extractor_resolves_possessive_surface_to_matching_anatomy_node(tmp_path: Path) -> None:
+    (tmp_path / "nodes.csv").write_text(
+        "\n".join(
+            [
+                "node_index,node_id,node_type,node_name,node_source",
+                "1,anatomy:colles_fascia,anatomy,Colles fascia,primekg",
+                "2,anatomy:perineum,anatomy,Perineum,primekg",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "edges.csv").write_text(
+        "\n".join(
+            [
+                "relation,display_relation,x_index,y_index",
+                "anatomy_anatomy,parent-child,1,2",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    extractor = PrimeKGExtractor(primekg_path=tmp_path)
+    resolved = extractor.resolve_seed_entities(
+        [QuestionEntity(surface="Colle's fascia", cui=None, primekg_node_id=None, entity_type="anatomy")]
+    )
+
+    assert resolved[0].primekg_node_id == "anatomy:colles_fascia"
+
+
+def test_primekg_extractor_matches_real_node_type_variants(tmp_path: Path) -> None:
+    (tmp_path / "nodes.csv").write_text(
+        "\n".join(
+            [
+                "node_index,node_id,node_type,node_name,node_source",
+                "1,protein:phyhip,gene/protein,PHYHIP,NCBI",
+                "2,symptom:bleeding,effect/phenotype,bleeding risk,primekg",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "edges.csv").write_text(
+        "\n".join(
+            [
+                "relation,display_relation,x_index,y_index",
+                "protein_protein,ppi,1,1",
+                "phenotype_phenotype,associated phenotype,2,2",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    extractor = PrimeKGExtractor(primekg_path=tmp_path)
+    resolved = extractor.resolve_seed_entities(
+        [
+            QuestionEntity(surface="PHYHIP", cui=None, primekg_node_id=None, entity_type="protein"),
+            QuestionEntity(surface="bleeding risk", cui=None, primekg_node_id=None, entity_type="symptom"),
+        ]
+    )
+
+    assert resolved[0].primekg_node_id == "protein:phyhip"
+    assert resolved[1].primekg_node_id == "symptom:bleeding"
+
+
 def test_pubmed_retriever_returns_pubmed_passages(tmp_path: Path) -> None:
     retriever = PubMedRetriever(cache_path=tmp_path / "cache.jsonl", client=FakePubMedClient(cache_path=tmp_path / "cache.jsonl"))
     retriever.config.query_encoder_model_name = None
