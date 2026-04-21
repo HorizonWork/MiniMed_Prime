@@ -1,5 +1,5 @@
 ﻿MiniMed Prime Kaggle source package
-version: 2026-04-21-ticket-020-medreason-config-filter-fix
+version: 2026-04-21-ticket-020-medreason-generation-config-fix
 notes:
-- Ignore config.json and metadata JSON files when scanning local MedReason dataset directories on Kaggle.
-- Validation: py_compile + pytest for medreason adapter path handling and seed export tests.
+- Ignore generation_config.json, tokenizer_config.json, special_tokens_map.json, and *_config.json when scanning local MedReason directories.
+- Validation: py_compile + pytest for medreason adapter local dataset loading and seed export tests.

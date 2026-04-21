@@ -746,16 +746,29 @@ def _candidate_files(source_dir: Path, *, split: str | None) -> tuple[list[Path]
 
 
 def _filter_dataset_files(paths: Sequence[Path]) -> list[Path]:
+    filtered = [path for path in paths if not _is_ignored_dataset_file(path)]
+    return sorted(filtered, key=_dataset_file_priority)
+
+
+def _is_ignored_dataset_file(path: Path) -> bool:
+    name = path.name.lower()
+    stem = path.stem.lower()
     ignored_names = {
         "config.json",
         "dataset-metadata.json",
         "dataset_info.json",
         "datasets-metadata.json",
+        "generation_config.json",
         "metadata.json",
+        "special_tokens_map.json",
         "state.json",
+        "tokenizer_config.json",
     }
-    filtered = [path for path in paths if path.name.lower() not in ignored_names]
-    return sorted(filtered, key=_dataset_file_priority)
+    if name in ignored_names:
+        return True
+    if path.suffix.lower() == ".json" and stem.endswith("_config"):
+        return True
+    return False
 
 
 def _dataset_file_priority(path: Path) -> tuple[int, int, str]:

@@ -195,6 +195,14 @@ def test_load_medreason_records_ignores_config_json_when_dataset_file_exists(tmp
         json.dumps({"builder_name": "medreason", "config_name": "default"}),
         encoding="utf-8",
     )
+    (tmp_path / "generation_config.json").write_text(
+        json.dumps({"max_length": 512, "do_sample": False}),
+        encoding="utf-8",
+    )
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"model_max_length": 512}),
+        encoding="utf-8",
+    )
     (tmp_path / "ours_quality_33000.jsonl").write_text(
         json.dumps({"question": "Q1", "answer": "A1"}) + "\n",
         encoding="utf-8",
