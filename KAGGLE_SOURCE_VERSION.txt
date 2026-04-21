@@ -1,5 +1,5 @@
 ﻿MiniMed Prime Kaggle source package
-version: 2026-04-21-ticket-020-medreason-generation-config-fix
+version: 2026-04-21-ticket-020-medreason-artifact-json-skip
 notes:
-- Ignore generation_config.json, tokenizer_config.json, special_tokens_map.json, and *_config.json when scanning local MedReason directories.
-- Validation: py_compile + pytest for medreason adapter local dataset loading and seed export tests.
+- Skip model artifact JSON files such as model.safetensors.index.json and continue scanning for real MedReason record files.
+- Validation: py_compile + pytest for medreason adapter local dataset discovery and seed export tests.

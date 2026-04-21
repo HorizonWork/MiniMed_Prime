@@ -719,10 +719,27 @@ def _load_local_records(source_path: Path, *, split: str | None) -> list[dict[st
     if not candidate_files:
         raise FileNotFoundError(f"No MedReason dataset files found under {source_path}.")
     records: list[dict[str, Any]] = []
+    skipped_candidates: list[tuple[Path, str]] = []
     for candidate in candidate_files:
-        records.extend(_load_records_file(candidate, split=split))
+        try:
+            candidate_records = _load_records_file(candidate, split=split)
+        except ValueError as exc:
+            if _should_skip_candidate_file_error(candidate, exc):
+                skipped_candidates.append((candidate, str(exc)))
+                continue
+            raise
+        if candidate_records:
+            records.extend(candidate_records)
     if not split_specific:
         records = _apply_default_local_split(records, split=split)
+    if records:
+        return records
+    if skipped_candidates:
+        skipped_names = ", ".join(path.name for path, _ in skipped_candidates[:10])
+        raise ValueError(
+            f"No usable MedReason records were found under {source_path}. "
+            f"Skipped non-dataset files such as: {skipped_names}."
+        )
     return records
 
 
@@ -766,9 +783,29 @@ def _is_ignored_dataset_file(path: Path) -> bool:
     }
     if name in ignored_names:
         return True
+    if name.endswith(".index.json") and any(token in name for token in ("model", "pytorch", "safetensors")):
+        return True
     if path.suffix.lower() == ".json" and stem.endswith("_config"):
         return True
+    if path.suffix.lower() == ".json" and any(
+        token in stem
+        for token in (
+            "adapter_config",
+            "generation_config",
+            "special_tokens_map",
+            "tokenizer",
+            "trainer_state",
+        )
+    ):
+        return True
     return False
+
+
+def _should_skip_candidate_file_error(path: Path, exc: ValueError) -> bool:
+    if path.suffix.lower() != ".json":
+        return False
+    message = str(exc)
+    return message.startswith("Could not interpret MedReason JSON structure from ")
 
 
 def _dataset_file_priority(path: Path) -> tuple[int, int, str]:

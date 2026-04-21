@@ -203,6 +203,10 @@ def test_load_medreason_records_ignores_config_json_when_dataset_file_exists(tmp
         json.dumps({"model_max_length": 512}),
         encoding="utf-8",
     )
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {"model.embed_tokens.weight": "model-00001-of-00002.safetensors"}}),
+        encoding="utf-8",
+    )
     (tmp_path / "ours_quality_33000.jsonl").write_text(
         json.dumps({"question": "Q1", "answer": "A1"}) + "\n",
         encoding="utf-8",
@@ -211,6 +215,21 @@ def test_load_medreason_records_ignores_config_json_when_dataset_file_exists(tmp
     records = load_medreason_records(tmp_path, split=None)
 
     assert records == [{"question": "Q1", "answer": "A1"}]
+
+
+def test_load_medreason_records_skips_non_dataset_json_before_valid_json_dataset(tmp_path: Path) -> None:
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {"layer": "model.safetensors"}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "train_records.json").write_text(
+        json.dumps([{"question": "Q2", "answer": "A2"}]),
+        encoding="utf-8",
+    )
+
+    records = load_medreason_records(tmp_path, split=None)
+
+    assert records == [{"question": "Q2", "answer": "A2"}]
 
 
 def test_heuristic_map_reasoning_to_edges_without_explicit_edge_ids() -> None:
