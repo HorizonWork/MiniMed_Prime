@@ -746,8 +746,31 @@ def _candidate_files(source_dir: Path, *, split: str | None) -> tuple[list[Path]
 
 
 def _filter_dataset_files(paths: Sequence[Path]) -> list[Path]:
-    ignored_names = {"dataset-metadata.json", "datasets-metadata.json"}
-    return [path for path in paths if path.name.lower() not in ignored_names]
+    ignored_names = {
+        "config.json",
+        "dataset-metadata.json",
+        "dataset_info.json",
+        "datasets-metadata.json",
+        "metadata.json",
+        "state.json",
+    }
+    filtered = [path for path in paths if path.name.lower() not in ignored_names]
+    return sorted(filtered, key=_dataset_file_priority)
+
+
+def _dataset_file_priority(path: Path) -> tuple[int, int, str]:
+    suffix_priority = {
+        ".jsonl": 0,
+        ".parquet": 1,
+        ".csv": 2,
+        ".json": 3,
+    }
+    name = path.name.lower()
+    stem = path.stem.lower()
+    name_priority = 1
+    if any(token in stem for token in ("train", "validation", "val", "test", "record", "example", "data")):
+        name_priority = 0
+    return (suffix_priority.get(path.suffix.lower(), 9), name_priority, name)
 
 
 def _apply_default_local_split(records: list[dict[str, Any]], *, split: str | None) -> list[dict[str, Any]]:

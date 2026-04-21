@@ -190,6 +190,21 @@ def test_load_medreason_records_applies_default_split_for_unsplit_local_file(tmp
     assert test_records[0]["question"] == "Q19"
 
 
+def test_load_medreason_records_ignores_config_json_when_dataset_file_exists(tmp_path: Path) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps({"builder_name": "medreason", "config_name": "default"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "ours_quality_33000.jsonl").write_text(
+        json.dumps({"question": "Q1", "answer": "A1"}) + "\n",
+        encoding="utf-8",
+    )
+
+    records = load_medreason_records(tmp_path, split=None)
+
+    assert records == [{"question": "Q1", "answer": "A1"}]
+
+
 def test_heuristic_map_reasoning_to_edges_without_explicit_edge_ids() -> None:
     bundle = make_bundle()
     example = normalize_medreason_record(

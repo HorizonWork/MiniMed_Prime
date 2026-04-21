@@ -1,6 +1,5 @@
 ﻿MiniMed Prime Kaggle source package
-version: 2026-04-21-ticket-020-grounding-coverage-nodeid-fix
+version: 2026-04-21-ticket-020-medreason-config-filter-fix
 notes:
-- Add lightweight coverage audit mode for MedReason grounding against PrimeKG nodes.csv without graph extraction.
-- Fix duplicate PrimeKG node_id collisions and tighten anatomy grounding normalization and extraction.
-- Validation: py_compile + pytest for grounding, layer1 retrieval, ablation tooling, and medreason adapter.
+- Ignore config.json and metadata JSON files when scanning local MedReason dataset directories on Kaggle.
+- Validation: py_compile + pytest for medreason adapter path handling and seed export tests.
