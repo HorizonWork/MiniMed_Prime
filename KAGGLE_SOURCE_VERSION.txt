@@ -1,5 +1,6 @@
-MiniMed Prime Kaggle source package
-version: 2026-04-21-ticket-020-grounding-ablation-data-only-kaggle-test-fix
+﻿MiniMed Prime Kaggle source package
+version: 2026-04-21-ticket-020-grounding-coverage-nodeid-fix
 notes:
-- Add data-only PrimeKG grounding ablation modes: baseline_current, deterministic_v2, and llm_assisted_v1.
-- Fix Kaggle/Linux test compatibility by reading seed outputs from result.output_path after Kaggle write-path remapping.
+- Add lightweight coverage audit mode for MedReason grounding against PrimeKG nodes.csv without graph extraction.
+- Fix duplicate PrimeKG node_id collisions and tighten anatomy grounding normalization and extraction.
+- Validation: py_compile + pytest for grounding, layer1 retrieval, ablation tooling, and medreason adapter.

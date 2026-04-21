@@ -219,6 +219,36 @@ def test_primekg_extractor_loads_optional_node_cui_from_edges_nodes_layout(tmp_p
     assert extractor.node_cui_index["c0019163"] == {"disease:h_pylori"}
 
 
+def test_primekg_extractor_uses_unique_internal_ids_when_raw_node_ids_duplicate(tmp_path: Path) -> None:
+    (tmp_path / "nodes.csv").write_text(
+        "\n".join(
+            [
+                "node_index,node_id,node_type,node_name,node_source",
+                "1,1103,anatomy,diaphragm,UBERON",
+                "2,1103,disease,giardiasis,MONDO",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "edges.csv").write_text(
+        "\n".join(
+            [
+                "relation,display_relation,x_index,y_index",
+                "disease_disease,associated disease,1,2",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    extractor = PrimeKGExtractor(primekg_path=tmp_path)
+    edge = list(extractor.edge_lookup.values())[0]
+
+    assert edge.head == "primekg_index:1"
+    assert edge.tail == "primekg_index:2"
+    assert extractor.graph.nodes["primekg_index:1"]["name"] == "diaphragm"
+    assert extractor.graph.nodes["primekg_index:2"]["name"] == "giardiasis"
+
+
 def test_primekg_extractor_resolves_alias_surface_against_generic_disease_suffix(tmp_path: Path) -> None:
     (tmp_path / "nodes.csv").write_text(
         "\n".join(

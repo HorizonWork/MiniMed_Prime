@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from src.layers.layer1_retrieval import PrimeKGExtractor
 from src.schemas import QuestionEntity
-from tools.grounding_ablation import audit_grounding_records
+from tools.grounding_ablation import audit_grounding_coverage, audit_grounding_records
 
 
 class StaticLinker:
@@ -109,3 +109,43 @@ def test_audit_grounding_records_runs_without_pubmed_or_trm(tmp_path: Path) -> N
     assert "entity_link_rate" in payload["summary"]
     assert "retrieved_edge_rate" in payload["summary"]
     assert "no_gold_skip_rate" in payload["summary"]
+
+
+def test_audit_grounding_coverage_runs_without_graph_extraction(tmp_path: Path) -> None:
+    write_grounding_primekg_tables(tmp_path)
+    source = tmp_path / "medreason.jsonl"
+    source.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "id": "row-1",
+                        "question": "Most sensitive test for H pylori is-",
+                        "answer": "Biopsy urease test",
+                        "reasoning": "Helicobacter pylori infectious disease is associated with gastritis.",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "id": "row-2",
+                        "question": "Deep transverse Perineus is related to which structure?",
+                        "answer": "Unknown",
+                        "reasoning": "An anatomy coverage gap sample.",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = audit_grounding_coverage(
+        source=source,
+        split=None,
+        grounding_mode="deterministic_v2",
+        primekg_path=tmp_path,
+    )
+
+    assert payload["summary"]["record_count"] == 2
+    assert "record_any_link_rate" in payload["summary"]
+    assert "record_all_unresolved_rate" in payload["summary"]

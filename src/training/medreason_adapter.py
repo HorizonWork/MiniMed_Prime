@@ -16,8 +16,10 @@ from src.retrieval import (
     DEFAULT_OPENAI_GROUNDER,
     DeterministicSeedGrounder,
     GROUNDING_MODES,
+    LightweightSeedEntityExtractor,
     LLMAssistedSeedGrounder,
     PrimeKGNodeCatalog,
+    SeedEntityExtractor,
     SeedGrounder,
     infer_question_type,
     normalize_basic_text,
@@ -228,6 +230,7 @@ def prepare_medreason_seed_jsonl(
         if node_catalog is not None
         else None
     )
+    seed_entity_extractor = LightweightSeedEntityExtractor(node_catalog) if node_catalog is not None else None
 
     records_saved = 0
     skipped_rows: list[dict[str, Any]] = []
@@ -253,6 +256,7 @@ def prepare_medreason_seed_jsonl(
                     llm_device=llm_device,
                     node_catalog=node_catalog,
                     seed_grounder=seed_grounder,
+                    seed_entity_extractor=seed_entity_extractor,
                 )
                 skip_stage = "edge_mapping"
                 edge_ids, diagnostics = map_medreason_edges(
@@ -429,6 +433,7 @@ def build_seed_evidence_bundle(
     llm_device: str = "cpu",
     node_catalog: PrimeKGNodeCatalog | None = None,
     seed_grounder: SeedGrounder | None = None,
+    seed_entity_extractor: SeedEntityExtractor | None = None,
 ) -> EvidenceBundle:
     normalized_mode, effective_model_name = resolve_grounding_mode_config(grounding_mode, llm_model_name)
     if normalized_mode == "baseline_current":
@@ -455,16 +460,17 @@ def build_seed_evidence_bundle(
         evidence.metadata.setdefault("llm_grounding_fallback_reason", None)
         return evidence
 
-    if not hasattr(retriever, "linker") or not hasattr(retriever, "kg_extractor"):
-        raise ValueError("Data-only grounding requires a retriever with linker and kg_extractor components.")
+    if not hasattr(retriever, "kg_extractor"):
+        raise ValueError("Data-only grounding requires a retriever with a kg_extractor component.")
 
     question_type = (
         infer_question_type(record={"question_type": question_type_hint}, question=question, fallback_label="factoid")
         if question_type_hint
         else infer_question_type(question=question, fallback_label="factoid")
     )
-    linked_entities = retriever.linker.link(question)
     catalog = node_catalog or PrimeKGNodeCatalog.from_primekg_path(retriever.config.primekg_path)
+    entity_extractor = seed_entity_extractor or LightweightSeedEntityExtractor(catalog)
+    linked_entities = entity_extractor.extract(question=question, question_type_hint=question_type_hint)
     grounder = seed_grounder or _build_seed_grounder(
         grounding_mode=normalized_mode,
         catalog=catalog,
@@ -490,7 +496,7 @@ def build_seed_evidence_bundle(
     unresolved_entities = [decision.surface for decision in grounding_decisions if decision.linked_node_id is None]
     seed_node_ids = [decision.linked_node_id for decision in grounding_decisions if decision.linked_node_id is not None]
     backend_mapping = {
-        "entity_linker": getattr(retriever.linker, "backend_used", "unknown"),
+        "entity_linker": getattr(entity_extractor, "backend_used", "unknown"),
         "primekg": getattr(retriever.kg_extractor, "backend_used", "unknown"),
         "pubmed": getattr(getattr(retriever, "pubmed", None), "backend_used", "unknown"),
         "seed_grounding": getattr(grounder, "backend_used", normalized_mode),
@@ -503,7 +509,7 @@ def build_seed_evidence_bundle(
         "pubmed_cache_path": str(getattr(retriever.config, "pubmed_cache_path", "")),
         "question_type": question_type,
         "question_type_hint": question_type_hint,
-        "entity_linker_backend": getattr(retriever.linker, "backend_used", "unknown"),
+        "entity_linker_backend": getattr(entity_extractor, "backend_used", "unknown"),
         "pubmed_backend": getattr(getattr(retriever, "pubmed", None), "backend_used", "unknown"),
         "relation_filter": relation_filter_stats,
         "backend_used": backend_mapping,

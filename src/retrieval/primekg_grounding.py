@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 
 NODE_TYPE_TO_ENTITY_TYPE = {
     "disease": "disease",
@@ -66,6 +67,19 @@ def parse_node_cuis(value: str) -> list[str]:
     return [normalize_basic_text(candidate) for candidate in re.split(r"[|,; ]+", value) if normalize_basic_text(candidate)]
 
 
+def resolve_primekg_node_identifier(
+    *,
+    node_index: str,
+    node_id: str,
+    duplicate_node_ids: Collection[str] | None = None,
+) -> str:
+    normalized_node_index = str(node_index).strip()
+    normalized_node_id = str(node_id).strip() or f"node:{normalized_node_index}"
+    if duplicate_node_ids is not None and normalized_node_id in duplicate_node_ids:
+        return f"primekg_index:{normalized_node_index}"
+    return normalized_node_id
+
+
 __all__ = [
     "GENERIC_NAME_SUFFIXES",
     "LOOKUP_PHRASE_ALIASES",
@@ -75,4 +89,5 @@ __all__ = [
     "normalize_basic_text",
     "normalize_lookup_text",
     "parse_node_cuis",
+    "resolve_primekg_node_identifier",
 ]

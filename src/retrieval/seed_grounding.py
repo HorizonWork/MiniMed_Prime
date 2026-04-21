@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import csv
 import math
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Literal, Protocol, Sequence
+from typing import Any, Literal, Protocol, Sequence, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -17,9 +18,12 @@ from src.retrieval.primekg_grounding import (
     normalize_basic_text,
     normalize_lookup_text,
     parse_node_cuis,
+    resolve_primekg_node_identifier,
 )
 from src.schemas import QuestionEntity
 from src.utils.kaggle_env import KaggleEnv
+
+T = TypeVar("T")
 
 DEFAULT_GROUNDING_TOP_K = 20
 DEFAULT_EXACT_KEY_SCORE = 1.00
@@ -33,10 +37,87 @@ DEFAULT_MARGIN_GAP = 0.08
 DEFAULT_MIN_FUZZY_SCORE = 0.60
 DEFAULT_MIN_TOKEN_LENGTH = 3
 DEFAULT_MAX_FUZZY_CANDIDATES = 200
+DEFAULT_MAX_EXTRACTED_NGRAM = 6
 DEFAULT_OPENAI_GROUNDER = "gpt-4o-mini"
 DEFAULT_GEMINI_GROUNDER = "gemini-2.5-flash"
 
 GROUNDING_MODES = ("baseline_current", "deterministic_v2", "llm_assisted_v1")
+SEED_EXTRACTOR_BACKEND = "lightweight_seed_rules"
+QUESTION_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9']+")
+OPTION_LINE_PATTERN = re.compile(r"(?mi)^\s*(?:[A-H][\.\)])\s*(.+?)\s*$")
+STRUCTURAL_SEGMENT_PATTERN = re.compile(r"(?i)\b(?:options|answer choices?)\b\s*:?\s*")
+SEED_EXTRACTION_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "answer",
+        "answers",
+        "choices",
+        "except",
+        "following",
+        "for",
+        "from",
+        "in",
+        "is",
+        "made",
+        "of",
+        "option",
+        "options",
+        "or",
+        "the",
+        "to",
+        "up",
+        "with",
+    }
+)
+ANATOMY_HINT_TOKENS = frozenset(
+    {
+        "anatomy",
+        "artery",
+        "diaphragm",
+        "duct",
+        "fascia",
+        "gland",
+        "ligament",
+        "membrane",
+        "muscle",
+        "nerve",
+        "perineal",
+        "perineus",
+        "sphincter",
+        "structure",
+        "urethrae",
+        "vein",
+    }
+)
+GENERIC_ANATOMY_SINGLETONS = frozenset(
+    {
+        "artery",
+        "diaphragm",
+        "duct",
+        "fascia",
+        "gland",
+        "ligament",
+        "membrane",
+        "muscle",
+        "nerve",
+        "sphincter",
+        "structure",
+        "vein",
+    }
+)
+ANATOMY_QUERY_ALIASES: dict[str, tuple[str, ...]] = {
+    "deep transverse perineus": ("perineal muscle",),
+    "deep transverse perineal": ("perineal muscle",),
+    "perinial membrane": ("perineal membrane",),
+    "sphincter urethrae": ("urethral sphincter",),
+}
+ANATOMY_QUERY_TOKEN_ALIASES = {
+    "perinial": "perineal",
+    "perineus": "perineal",
+    "urethrae": "urethral",
+}
 
 
 @dataclass(slots=True)
@@ -80,6 +161,13 @@ class SeedGrounder(Protocol):
     fallback_reason: str | None
 
     def ground(self, question: str, entities: Sequence[QuestionEntity]) -> list[EntityGroundingDecision]:
+        raise NotImplementedError
+
+
+class SeedEntityExtractor(Protocol):
+    backend_used: str
+
+    def extract(self, question: str, question_type_hint: str | None = None) -> list[QuestionEntity]:
         raise NotImplementedError
 
 
@@ -128,9 +216,27 @@ class PrimeKGNodeCatalog:
             node_cui_column = _first_present(header, ("node_cui", "cui", "umls_cui", "umls_id"))
             if node_id_column is None or node_name_column is None or node_type_column is None:
                 raise ValueError("PrimeKG nodes.csv is missing required node_id, node_name, or node_type columns.")
+            node_index_column = _first_present(header, ("node_index", "index", "id"))
+            if node_index_column is None:
+                raise ValueError("PrimeKG nodes.csv is missing required node_index column for stable data-only grounding.")
+            rows = list(reader)
+            duplicate_node_ids = {
+                raw_node_id
+                for raw_node_id, count in Counter(
+                    str(row.get(node_id_column, "") or "").strip() or f"node:{str(row.get(node_index_column, '') or '').strip()}"
+                    for row in rows
+                ).items()
+                if count > 1
+            }
 
-            for row in reader:
-                node_id = str(row.get(node_id_column, "") or "").strip()
+            for row in rows:
+                node_index = str(row.get(node_index_column, "") or "").strip()
+                raw_node_id = str(row.get(node_id_column, "") or "").strip()
+                node_id = resolve_primekg_node_identifier(
+                    node_index=node_index,
+                    node_id=raw_node_id,
+                    duplicate_node_ids=duplicate_node_ids,
+                )
                 node_name = str(row.get(node_name_column, "") or "").strip()
                 node_type = str(row.get(node_type_column, "") or "other").strip() or "other"
                 source = str(row.get(node_source_column, "") or "primekg").strip() or "primekg"
@@ -194,6 +300,138 @@ class PrimeKGNodeCatalog:
         return set(ranked_candidates[:DEFAULT_MAX_FUZZY_CANDIDATES])
 
 
+class LightweightSeedEntityExtractor:
+    def __init__(self, catalog: PrimeKGNodeCatalog, *, max_ngram: int = DEFAULT_MAX_EXTRACTED_NGRAM) -> None:
+        self.catalog = catalog
+        self.max_ngram = max(1, max_ngram)
+        self.backend_used = SEED_EXTRACTOR_BACKEND
+
+    def extract(self, question: str, question_type_hint: str | None = None) -> list[QuestionEntity]:
+        del question_type_hint
+        extracted: list[QuestionEntity] = []
+        seen_keys: set[tuple[str, str]] = set()
+        for segment in self._raw_surface_segments(question):
+            self._append_entity_if_new(
+                extracted=extracted,
+                seen_keys=seen_keys,
+                surface=segment,
+                entity_type=self._infer_surface_entity_type(segment),
+            )
+        for surface, entity_type in self._matched_spans(question):
+            self._append_entity_if_new(
+                extracted=extracted,
+                seen_keys=seen_keys,
+                surface=surface,
+                entity_type=entity_type,
+            )
+        return extracted
+
+    def _segment_lines(self, question: str) -> tuple[list[str], list[str]]:
+        cleaned_question = STRUCTURAL_SEGMENT_PATTERN.sub("\n", question or "")
+        option_segments = [
+            _clean_seed_surface(match.group(1))
+            for match in OPTION_LINE_PATTERN.finditer(cleaned_question)
+        ]
+        stem_lines: list[str] = []
+        for raw_line in cleaned_question.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if OPTION_LINE_PATTERN.match(line):
+                continue
+            stem_lines.append(line)
+        return stem_lines, option_segments
+
+    def _raw_surface_segments(self, question: str) -> list[str]:
+        stem_lines, option_segments = self._segment_lines(question)
+        raw_segments = [segment for segment in option_segments if _is_seed_surface_candidate(segment)]
+        raw_segments.extend(
+            segment
+            for segment in stem_lines
+            if _is_seed_surface_candidate(segment) and len(QUESTION_TOKEN_PATTERN.findall(segment)) <= 4
+        )
+        return _dedupe_preserve_order(raw_segments)
+
+    def _matched_spans(self, question: str) -> list[tuple[str, str]]:
+        matches: list[tuple[str, str]] = []
+        stem_lines, _ = self._segment_lines(question)
+        for segment in stem_lines:
+            tokens = QUESTION_TOKEN_PATTERN.findall(segment)
+            if not tokens:
+                continue
+            max_window = min(self.max_ngram, len(tokens))
+            for window in range(max_window, 0, -1):
+                for start in range(0, len(tokens) - window + 1):
+                    span_tokens = tokens[start : start + window]
+                    span_surface = " ".join(span_tokens).strip()
+                    if not _is_seed_surface_candidate(span_surface):
+                        continue
+                    matched_type = self._matched_entity_type(span_surface)
+                    if matched_type is not None:
+                        if (
+                            len(span_tokens) == 1
+                            and matched_type == "anatomy"
+                            and normalize_lookup_text(span_surface) in GENERIC_ANATOMY_SINGLETONS
+                        ):
+                            continue
+                        matches.append((span_surface, matched_type))
+        return _dedupe_preserve_order(matches)
+
+    def _matched_entity_type(self, surface: str) -> str | None:
+        query_basic = normalize_basic_text(surface)
+        query_lookup = normalize_lookup_text(surface)
+        exact_or_alias_ids = set(self.catalog.exact_index.get(query_basic, set())) | set(
+            self.catalog.alias_index.get(query_lookup, set())
+        )
+        matched_node_ids = exact_or_alias_ids or set(self.catalog.suffix_index.get(query_lookup, set()))
+        if not matched_node_ids:
+            return None
+        node_types = {
+            NODE_TYPE_TO_ENTITY_TYPE.get(normalize_basic_text(self.catalog.records_by_id[node_id].node_type), "other")
+            for node_id in matched_node_ids
+            if node_id in self.catalog.records_by_id
+        }
+        if len(node_types) == 1:
+            return next(iter(node_types))
+        if "other" in node_types and len(node_types) == 2:
+            return next(iter(node_types - {"other"}), "other")
+        return "other"
+
+    def _infer_surface_entity_type(self, surface: str) -> str:
+        matched_type = self._matched_entity_type(surface)
+        if matched_type is not None:
+            return matched_type
+        normalized = normalize_lookup_text(surface)
+        surface_tokens = set(normalized.split())
+        if surface_tokens & ANATOMY_HINT_TOKENS:
+            return "anatomy"
+        return "other"
+
+    def _append_entity_if_new(
+        self,
+        *,
+        extracted: list[QuestionEntity],
+        seen_keys: set[tuple[str, str]],
+        surface: str,
+        entity_type: str,
+    ) -> None:
+        normalized_surface = normalize_basic_text(surface)
+        if not normalized_surface:
+            return
+        key = (normalized_surface, entity_type)
+        if key in seen_keys:
+            return
+        seen_keys.add(key)
+        extracted.append(
+            QuestionEntity(
+                surface=surface,
+                cui=None,
+                primekg_node_id=None,
+                entity_type=entity_type,
+            )
+        )
+
+
 class DeterministicSeedGrounder:
     def __init__(self, catalog: PrimeKGNodeCatalog, *, top_k: int = DEFAULT_GROUNDING_TOP_K) -> None:
         self.catalog = catalog
@@ -212,8 +450,7 @@ class DeterministicSeedGrounder:
     def _ground_entity(self, entity: QuestionEntity) -> EntityGroundingDecision:
         candidate_scores: dict[str, float] = {}
         candidate_features: dict[str, set[str]] = defaultdict(set)
-        query_basic = normalize_basic_text(entity.surface)
-        query_lookup = normalize_lookup_text(entity.surface)
+        query_variants = _query_variants(entity)
 
         if entity.cui:
             for node_id in self.catalog.cui_index.get(entity.cui.lower(), set()):
@@ -226,62 +463,73 @@ class DeterministicSeedGrounder:
                     candidate_features=candidate_features,
                 )
 
-        for node_id in self.catalog.exact_index.get(query_basic, set()):
-            self._register_candidate(
-                entity=entity,
-                node_id=node_id,
-                base_score=DEFAULT_EXACT_KEY_SCORE,
-                feature="exact_key_hit",
-                candidate_scores=candidate_scores,
-                candidate_features=candidate_features,
-            )
+        for query_basic, query_lookup, query_feature in query_variants:
+            exact_hits = set(self.catalog.exact_index.get(query_basic, set()))
+            for node_id in exact_hits:
+                self._register_candidate(
+                    entity=entity,
+                    node_id=node_id,
+                    base_score=DEFAULT_EXACT_KEY_SCORE,
+                    feature="exact_key_hit",
+                    candidate_scores=candidate_scores,
+                    candidate_features=candidate_features,
+                    extra_feature=query_feature,
+                )
 
-        for node_id in self.catalog.alias_index.get(query_lookup, set()):
-            if node_id in self.catalog.exact_index.get(query_basic, set()):
-                continue
-            self._register_candidate(
-                entity=entity,
-                node_id=node_id,
-                base_score=DEFAULT_ALIAS_KEY_SCORE,
-                feature="alias_key_hit",
-                candidate_scores=candidate_scores,
-                candidate_features=candidate_features,
-            )
+            for node_id in self.catalog.alias_index.get(query_lookup, set()):
+                if node_id in exact_hits:
+                    continue
+                self._register_candidate(
+                    entity=entity,
+                    node_id=node_id,
+                    base_score=DEFAULT_ALIAS_KEY_SCORE,
+                    feature="alias_key_hit",
+                    candidate_scores=candidate_scores,
+                    candidate_features=candidate_features,
+                    extra_feature=query_feature,
+                )
 
-        for node_id in self.catalog.suffix_index.get(query_lookup, set()):
-            self._register_candidate(
-                entity=entity,
-                node_id=node_id,
-                base_score=DEFAULT_SUFFIX_KEY_SCORE,
-                feature="suffix_key_hit",
-                candidate_scores=candidate_scores,
-                candidate_features=candidate_features,
-            )
+            for node_id in self.catalog.suffix_index.get(query_lookup, set()):
+                self._register_candidate(
+                    entity=entity,
+                    node_id=node_id,
+                    base_score=DEFAULT_SUFFIX_KEY_SCORE,
+                    feature="suffix_key_hit",
+                    candidate_scores=candidate_scores,
+                    candidate_features=candidate_features,
+                    extra_feature=query_feature,
+                )
 
         current_best = max(candidate_scores.values(), default=0.0)
         if current_best < DEFAULT_ALIAS_KEY_SCORE:
-            for node_id in self.catalog.fuzzy_pool(entity.surface):
+            fuzzy_candidates: set[str] = set()
+            for _, query_lookup, _ in query_variants:
+                fuzzy_candidates.update(self.catalog.fuzzy_pool(query_lookup))
+            for node_id in fuzzy_candidates:
                 record = self.catalog.records_by_id[node_id]
-                token_containment = _token_containment_score(query_lookup, record.lookup_key)
-                fuzzy_score = _fuzzy_score(query_lookup, record.lookup_key)
-                if token_containment > 0.0:
-                    self._register_candidate(
-                        entity=entity,
-                        node_id=node_id,
-                        base_score=token_containment,
-                        feature="token_containment",
-                        candidate_scores=candidate_scores,
-                        candidate_features=candidate_features,
-                    )
-                if fuzzy_score >= DEFAULT_MIN_FUZZY_SCORE:
-                    self._register_candidate(
-                        entity=entity,
-                        node_id=node_id,
-                        base_score=fuzzy_score,
-                        feature="fuzzy_similarity",
-                        candidate_scores=candidate_scores,
-                        candidate_features=candidate_features,
-                    )
+                for _, query_lookup, query_feature in query_variants:
+                    token_containment = _token_containment_score(query_lookup, record.lookup_key)
+                    fuzzy_score = _fuzzy_score(query_lookup, record.lookup_key)
+                    if token_containment > 0.0:
+                        self._register_candidate(
+                            entity=entity,
+                            node_id=node_id,
+                            base_score=token_containment,
+                            feature="token_containment",
+                            candidate_scores=candidate_scores,
+                            candidate_features=candidate_features,
+                            extra_feature=query_feature,
+                        )
+                    if fuzzy_score >= DEFAULT_MIN_FUZZY_SCORE:
+                        self._register_candidate(
+                            entity=entity,
+                            node_id=node_id,
+                            base_score=fuzzy_score,
+                            feature="fuzzy_similarity",
+                            candidate_scores=candidate_scores,
+                            candidate_features=candidate_features,
+                            extra_feature=query_feature,
+                        )
 
         ranked_candidates = self._rank_candidates(candidate_scores, candidate_features)
         linked_node_id: str | None = None
@@ -322,12 +570,15 @@ class DeterministicSeedGrounder:
         feature: str,
         candidate_scores: dict[str, float],
         candidate_features: dict[str, set[str]],
+        extra_feature: str | None = None,
     ) -> None:
         record = self.catalog.records_by_id[node_id]
         type_bonus = DEFAULT_TYPE_BONUS if _entity_matches_node_type(entity.entity_type, record.node_type) else 0.0
         score = min(base_score + type_bonus, 1.0)
         candidate_scores[node_id] = max(candidate_scores.get(node_id, 0.0), score)
         candidate_features[node_id].add(feature)
+        if extra_feature is not None:
+            candidate_features[node_id].add(extra_feature)
         if type_bonus > 0.0:
             candidate_features[node_id].add("type_bonus")
 
@@ -675,6 +926,73 @@ def _first_present(columns: Sequence[str], candidates: Sequence[str]) -> str | N
     return None
 
 
+def _clean_seed_surface(value: str) -> str:
+    cleaned = STRUCTURAL_SEGMENT_PATTERN.sub(" ", value or "")
+    cleaned = re.sub(r"^\s*[A-H][\.\)]\s*", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" \t\n\r:;,-")
+    return cleaned
+
+
+def _is_seed_surface_candidate(value: str) -> bool:
+    cleaned = _clean_seed_surface(value)
+    if not cleaned:
+        return False
+    normalized = normalize_lookup_text(cleaned)
+    if not normalized:
+        return False
+    tokens = normalized.split()
+    if not tokens:
+        return False
+    if len(tokens) == 1 and (tokens[0] in SEED_EXTRACTION_STOPWORDS or len(tokens[0]) < DEFAULT_MIN_TOKEN_LENGTH):
+        return False
+    non_stop_tokens = [token for token in tokens if token not in SEED_EXTRACTION_STOPWORDS]
+    return bool(non_stop_tokens)
+
+
+def _dedupe_preserve_order(values: Sequence[T]) -> list[T]:
+    deduped: list[T] = []
+    seen: set[T] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
+def _query_variants(entity: QuestionEntity) -> list[tuple[str, str, str]]:
+    variants: list[tuple[str, str, str]] = []
+    seen_lookup_keys: set[str] = set()
+
+    def _append_variant(surface: str, feature: str) -> None:
+        basic = normalize_basic_text(surface)
+        lookup = normalize_lookup_text(surface)
+        if not lookup or lookup in seen_lookup_keys:
+            return
+        seen_lookup_keys.add(lookup)
+        variants.append((basic, lookup, feature))
+
+    _append_variant(entity.surface, "surface_form")
+    if entity.entity_type == "anatomy":
+        normalized_lookup = normalize_lookup_text(entity.surface)
+        anatomy_rewrite = _rewrite_anatomy_lookup(normalized_lookup)
+        if anatomy_rewrite and anatomy_rewrite != normalized_lookup:
+            _append_variant(anatomy_rewrite, "anatomy_token_rewrite")
+        for alias_surface in ANATOMY_QUERY_ALIASES.get(normalized_lookup, ()):
+            _append_variant(alias_surface, "anatomy_phrase_alias")
+    return variants
+
+
+def _rewrite_anatomy_lookup(value: str) -> str:
+    if not value:
+        return value
+    rewritten_tokens = [ANATOMY_QUERY_TOKEN_ALIASES.get(token, token) for token in value.split()]
+    rewritten = " ".join(rewritten_tokens).strip()
+    if rewritten.startswith("sphincter ") and len(rewritten_tokens) == 2:
+        rewritten = f"{rewritten_tokens[1]} {rewritten_tokens[0]}"
+    return rewritten
+
+
 __all__ = [
     "DEFAULT_GEMINI_GROUNDER",
     "DEFAULT_GROUNDING_TOP_K",
@@ -686,9 +1004,12 @@ __all__ = [
     "EntityGroundingSelection",
     "EntityGroundingSelectionBatch",
     "GROUNDING_MODES",
+    "LightweightSeedEntityExtractor",
     "LLMAssistedSeedGrounder",
     "PrimeKGNodeCatalog",
     "PrimeKGNodeRecord",
+    "SEED_EXTRACTOR_BACKEND",
+    "SeedEntityExtractor",
     "SeedGrounder",
     "serialize_grounding_decisions",
     "summarize_grounding_candidates",

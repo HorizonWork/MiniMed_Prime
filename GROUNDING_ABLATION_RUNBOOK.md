@@ -8,8 +8,10 @@ This runbook covers the data-only PrimeKG grounding ablation flow used for MedRe
   - Uses the current `AgenticRetriever.retrieve()` path unchanged.
 - `deterministic_v2`
   - Uses data-only node catalog grounding with exact, alias, suffix, and fuzzy lexical matching.
+  - Uses a lightweight seed entity extractor and does not require `scispacy` or `en_core_sci_lg`.
 - `llm_assisted_v1`
   - Uses deterministic candidates first, then an LLM judge reranks or skips from supplied candidates only.
+  - Reuses the same lightweight seed entity extractor, so it also avoids `scispacy` in the data-only path.
 
 ## Seed Building
 
@@ -59,6 +61,17 @@ python tools\grounding_ablation.py audit `
   --output-json artifacts\grounding_audit_det_v2.json
 ```
 
+Grounding-only coverage audit without graph extraction:
+
+```powershell
+python tools\grounding_ablation.py coverage `
+  --source data/medreason `
+  --split train `
+  --limit 1000 `
+  --grounding-mode deterministic_v2 `
+  --output-json artifacts\grounding_coverage_det_v2.json
+```
+
 3-way ablation:
 
 ```powershell
@@ -74,3 +87,4 @@ python tools\grounding_ablation.py ablation `
 - This flow is data-only and does not change inference runtime.
 - The analysis CLI disables PubMed by default to stay lightweight.
 - `llm_assisted_v1` falls back to deterministic grounding when no real LLM backend is configured.
+- `coverage` mode only checks node grounding against `nodes.csv`; it does not build a graph or extract edges.

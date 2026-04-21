@@ -19,6 +19,7 @@ from src.retrieval import (
     normalize_basic_text,
     normalize_lookup_text,
     parse_node_cuis,
+    resolve_primekg_node_identifier,
     resolve_relation_filter,
     summarize_relation_filter_stats,
 )
@@ -980,12 +981,26 @@ class PrimeKGExtractor:
             node_type_column = self._resolve_column(nodes_frame, ("node_type", "type"))
             node_source_column = self._resolve_column(nodes_frame, ("node_source", "source"), required=False)
             node_cui_column = self._resolve_column(nodes_frame, ("node_cui", "cui", "umls_cui", "umls_id"), required=False)
+            duplicate_node_ids = {
+                raw_node_id
+                for raw_node_id, count in Counter(
+                    self._string_or_fallback(getattr(row, node_id_column), fallback=f"node:{self._node_index_key(getattr(row, node_index_column))}")
+                    for row in nodes_frame.itertuples(index=False)
+                ).items()
+                if count > 1
+            }
             node_records: dict[str, dict[str, str]] = {}
             for row in nodes_frame.itertuples(index=False):
                 node_index = self._node_index_key(getattr(row, node_index_column))
-                node_id = self._string_or_fallback(getattr(row, node_id_column), fallback=f"node:{node_index}")
+                raw_node_id = self._string_or_fallback(getattr(row, node_id_column), fallback=f"node:{node_index}")
+                node_id = resolve_primekg_node_identifier(
+                    node_index=node_index,
+                    node_id=raw_node_id,
+                    duplicate_node_ids=duplicate_node_ids,
+                )
                 node_records[node_index] = {
                     "id": node_id,
+                    "raw_id": raw_node_id,
                     "name": self._string_or_fallback(getattr(row, node_name_column), fallback=node_id),
                     "type": self._string_or_fallback(getattr(row, node_type_column), fallback="other"),
                     "source": (

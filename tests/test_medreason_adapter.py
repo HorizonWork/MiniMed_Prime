@@ -39,6 +39,13 @@ class StaticLinker:
         return [entity.model_copy(deep=True) for entity in self._entities]
 
 
+class FailingLinker:
+    backend_used = "should_not_be_used"
+
+    def link(self, text: str):
+        raise AssertionError(f"Legacy linker should not be used in data-only grounding modes: {text}")
+
+
 class SilentPubMedRetriever:
     backend_used = "disabled"
 
@@ -48,7 +55,7 @@ class SilentPubMedRetriever:
 
 
 class GroundingAwareRetriever:
-    def __init__(self, *, primekg_path: Path, entities, use_relation_filter: bool = False) -> None:
+    def __init__(self, *, primekg_path: Path, entities=None, use_relation_filter: bool = False, linker=None) -> None:
         self.config = SimpleNamespace(
             primekg_path=primekg_path,
             pubmed_cache_path=primekg_path / "pubmed_cache.jsonl",
@@ -58,7 +65,7 @@ class GroundingAwareRetriever:
             relation_filter=None,
             relation_filter_overrides=None,
         )
-        self.linker = StaticLinker(entities)
+        self.linker = linker or StaticLinker(entities or [])
         self.kg_extractor = PrimeKGExtractor(primekg_path=primekg_path)
         self.pubmed = SilentPubMedRetriever()
 
@@ -276,6 +283,23 @@ def test_build_seed_evidence_bundle_supports_deterministic_grounding_mode(tmp_pa
     assert evidence.metadata["seed_node_ids"] == ["disease:h_pylori"]
     assert evidence.metadata["unresolved_entities"] == []
     assert evidence.question_entities[0].primekg_node_id == "disease:h_pylori"
+
+
+def test_build_seed_evidence_bundle_uses_lightweight_seed_extractor_instead_of_retriever_linker(tmp_path: Path) -> None:
+    write_grounding_primekg_tables(tmp_path)
+    retriever = GroundingAwareRetriever(
+        primekg_path=tmp_path,
+        linker=FailingLinker(),
+    )
+
+    evidence = build_seed_evidence_bundle(
+        question="Most sensitive test for H pylori is-",
+        retriever=retriever,  # type: ignore[arg-type]
+        grounding_mode="deterministic_v2",
+    )
+
+    assert evidence.metadata["entity_linker_backend"] == "lightweight_seed_rules"
+    assert evidence.metadata["seed_node_ids"] == ["disease:h_pylori"]
 
 
 def test_prepare_medreason_seed_jsonl_records_grounding_metadata_for_deterministic_mode(tmp_path: Path) -> None:

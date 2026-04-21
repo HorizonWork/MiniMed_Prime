@@ -14,6 +14,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.layers.layer1_retrieval import AgenticRetriever, PrimeKGExtractor  # noqa: E402
+from src.retrieval import (  # noqa: E402
+    DeterministicSeedGrounder,
+    LLMAssistedSeedGrounder,
+    LightweightSeedEntityExtractor,
+    PrimeKGNodeCatalog,
+)
 from src.schemas import EvidenceBundle  # noqa: E402
 from src.training.medreason_adapter import (  # noqa: E402
     DEFAULT_GROUNDING_MODE,
@@ -44,6 +50,20 @@ class GroundingAuditRow:
     llm_grounding_used: bool
     llm_grounding_fallback_reason: str | None
     corrected_aliases: list[str]
+
+
+@dataclass(slots=True)
+class GroundingCoverageRow:
+    group_id: str
+    grounding_mode: str
+    question: str
+    entity_count: int
+    linked_entity_count: int
+    linked_node_ids: list[str]
+    unresolved_entities: list[str]
+    grounding_backend: str
+    llm_grounding_used: bool
+    llm_grounding_fallback_reason: str | None
 
 
 class DisabledPubMedRetriever:
@@ -219,6 +239,69 @@ def run_grounding_ablation(
     }
 
 
+def audit_grounding_coverage(
+    *,
+    source: str | Path = DEFAULT_MEDREASON_SOURCE,
+    split: str | None = "train",
+    limit: int | None = None,
+    grounding_mode: str = DEFAULT_GROUNDING_MODE,
+    llm_model_name: str = DEFAULT_HEURISTIC_SELECTOR_NAME,
+    llm_device: str = "cpu",
+    primekg_path: str | Path | None = None,
+) -> dict[str, Any]:
+    records = load_medreason_records(source, split=split, limit=limit)
+    catalog = PrimeKGNodeCatalog.from_primekg_path(primekg_path or KaggleEnv.path("data/kg/primekg"))
+    extractor = LightweightSeedEntityExtractor(catalog)
+    if grounding_mode == "baseline_current":
+        raise ValueError("coverage mode only supports deterministic_v2 or llm_assisted_v1 because it avoids inference retrieval.")
+    if grounding_mode == "llm_assisted_v1":
+        grounder = LLMAssistedSeedGrounder(catalog, model_name=llm_model_name, device=llm_device)
+    else:
+        grounder = DeterministicSeedGrounder(catalog)
+
+    rows: list[GroundingCoverageRow] = []
+    unresolved_counter: Counter[str] = Counter()
+    for index, record in enumerate(records):
+        example = normalize_medreason_record(record, index=index)
+        entities = extractor.extract(example.question)
+        decisions = grounder.ground(example.question, entities)
+        linked_node_ids = [decision.linked_node_id for decision in decisions if decision.linked_node_id]
+        unresolved_entities = [decision.surface for decision in decisions if decision.linked_node_id is None]
+        unresolved_counter.update(unresolved_entities)
+        rows.append(
+            GroundingCoverageRow(
+                group_id=example.group_id,
+                grounding_mode=grounding_mode,
+                question=example.question,
+                entity_count=len(decisions),
+                linked_entity_count=len(linked_node_ids),
+                linked_node_ids=linked_node_ids,
+                unresolved_entities=unresolved_entities,
+                grounding_backend=getattr(grounder, "backend_used", grounding_mode),
+                llm_grounding_used=bool(getattr(grounder, "llm_used", False)),
+                llm_grounding_fallback_reason=getattr(grounder, "fallback_reason", None),
+            )
+        )
+
+    total_records = len(rows)
+    total_entities = sum(row.entity_count for row in rows)
+    total_linked_entities = sum(row.linked_entity_count for row in rows)
+    records_with_any_link = sum(1 for row in rows if row.linked_entity_count > 0)
+    records_all_unresolved = sum(1 for row in rows if row.entity_count > 0 and row.linked_entity_count == 0)
+    return {
+        "grounding_mode": grounding_mode,
+        "rows": [asdict(row) for row in rows],
+        "summary": {
+            "record_count": total_records,
+            "entity_link_rate": round(total_linked_entities / total_entities, 4) if total_entities else 0.0,
+            "record_any_link_rate": round(records_with_any_link / total_records, 4) if total_records else 0.0,
+            "record_all_unresolved_rate": round(records_all_unresolved / total_records, 4) if total_records else 0.0,
+            "avg_linked_entities_per_record": round(total_linked_entities / total_records, 4) if total_records else 0.0,
+            "top_unresolved_surfaces": unresolved_counter.most_common(20),
+        },
+    }
+
+
 def _build_retriever(*, include_pubmed: bool = False) -> AgenticRetriever:
     retriever = AgenticRetriever(
         primekg_path=KaggleEnv.path("data/kg/primekg"),
@@ -299,6 +382,19 @@ def _build_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--llm-device", default="cpu")
     audit_parser.add_argument("--output-json", type=Path)
 
+    coverage_parser = subparsers.add_parser(
+        "coverage",
+        help="Run lightweight grounding coverage audit without graph extraction.",
+    )
+    coverage_parser.add_argument("--source", default=DEFAULT_MEDREASON_SOURCE)
+    coverage_parser.add_argument("--split", default="train")
+    coverage_parser.add_argument("--limit", type=int)
+    coverage_parser.add_argument("--grounding-mode", default="deterministic_v2")
+    coverage_parser.add_argument("--llm-model-name", default=DEFAULT_HEURISTIC_SELECTOR_NAME)
+    coverage_parser.add_argument("--llm-device", default="cpu")
+    coverage_parser.add_argument("--primekg-path", default=str(KaggleEnv.path("data/kg/primekg")))
+    coverage_parser.add_argument("--output-json", type=Path)
+
     ablation_parser = subparsers.add_parser("ablation", help="Run 3-way grounding ablation.")
     ablation_parser.add_argument("--source", default=DEFAULT_MEDREASON_SOURCE)
     ablation_parser.add_argument("--split", default="train")
@@ -331,6 +427,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             edge_mapper_backend=args.edge_mapper_backend,
             llm_model_name=args.llm_model_name,
             llm_device=args.llm_device,
+        )
+    elif args.command == "coverage":
+        payload = audit_grounding_coverage(
+            source=args.source,
+            split=args.split,
+            limit=args.limit,
+            grounding_mode=args.grounding_mode,
+            llm_model_name=args.llm_model_name,
+            llm_device=args.llm_device,
+            primekg_path=args.primekg_path,
         )
     else:
         payload = run_grounding_ablation(
