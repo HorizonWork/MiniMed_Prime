@@ -1550,9 +1550,9 @@ class AgenticRetriever:
 
     def __init__(
         self,
-        primekg_path: Path = DEFAULT_PRIMEKG_PATH,
+        primekg_path: str | Path = DEFAULT_PRIMEKG_PATH,
         pubmed_api_key: str | None = None,
-        pubmed_cache_path: Path | None = None,
+        pubmed_cache_path: str | Path | None = None,
         scispacy_model: str = DEFAULT_SCISPACY_MODEL,
         use_relation_filter: bool = True,
         relation_filter: set[str] | None = None,
@@ -1561,9 +1561,12 @@ class AgenticRetriever:
         kg_extractor: PrimeKGExtractor | None = None,
         pubmed: PubMedRetriever | None = None,
     ) -> None:
-        resolved_cache_path = pubmed_cache_path or DEFAULT_PUBMED_CACHE_PATH
+        resolved_cache_path = Path(pubmed_cache_path) if pubmed_cache_path is not None else DEFAULT_PUBMED_CACHE_PATH
+        primekg_path = Path(primekg_path)
         resolved_primekg_path = primekg_path if primekg_path.is_absolute() else KaggleEnv.path(primekg_path)
-        resolved_cache_path = KaggleEnv.ensure_writeable(resolved_cache_path if resolved_cache_path.is_absolute() else KaggleEnv.path(resolved_cache_path))
+        resolved_cache_path = KaggleEnv.ensure_writeable(
+            resolved_cache_path if resolved_cache_path.is_absolute() else KaggleEnv.path(resolved_cache_path)
+        )
         self.config = AgenticRetrieverConfig(
             primekg_path=resolved_primekg_path,
             pubmed_cache_path=resolved_cache_path,

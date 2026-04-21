@@ -3,8 +3,8 @@
 # and handles PyG/llama-cpp special cases based on the local torch and CUDA environment.
 
 spacy>=3.7,<3.8
-scispacy>=0.5.5,<0.7
-en-core-sci-lg @ https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz
+scispacy
+en-core-sci-lg @ https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_lg-0.5.4.tar.gz
 transformers>=4.44.0
 sentence-transformers>=3.0.1
 datasets>=2.20.0

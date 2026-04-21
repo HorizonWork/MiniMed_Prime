@@ -1,6 +1,7 @@
 # Minimal local environment for seed building and smoke checks.
 # This intentionally excludes llama-cpp, bitsandbytes, PyG, and MedReason-8B runtime deps.
 
+
 numpy<2
 packaging>=24.1
 pydantic>=2.7,<3

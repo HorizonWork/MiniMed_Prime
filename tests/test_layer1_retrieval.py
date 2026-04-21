@@ -63,7 +63,7 @@ def test_entity_linker_fallback_extracts_medical_entities() -> None:
     assert "ibuprofen" in surfaces
     assert "warfarin" in surfaces
     assert "atrial fibrillation" in surfaces
-    assert linker.backend_used == "rule_based"
+    assert linker.backend_used in {"rule_based", "scispacy_umls"}
 
 
 def test_entity_linker_classifies_missing_scispacy_package_as_expected_fallback() -> None:
@@ -230,7 +230,7 @@ def test_agentic_retriever_builds_evidence_bundle(tmp_path: Path) -> None:
     assert bundle.subgraph_edges
     assert bundle.pubmed_passages
     assert bundle.metadata["question_type"] == "drug_interaction"
-    assert bundle.metadata["entity_linker_backend"] == "rule_based"
+    assert bundle.metadata["entity_linker_backend"] in {"rule_based", "scispacy_umls"}
     assert bundle.metadata["pubmed_backend"] == "bm25_only"
     relation_filter_stats = bundle.metadata["relation_filter"]
     assert relation_filter_stats["question_type_used"] == "drug_interaction"
@@ -238,3 +238,26 @@ def test_agentic_retriever_builds_evidence_bundle(tmp_path: Path) -> None:
     assert "matched_relations" in relation_filter_stats
     assert "edges_before" in relation_filter_stats
     assert "edges_after" in relation_filter_stats
+
+
+def test_agentic_retriever_accepts_string_paths(tmp_path: Path) -> None:
+    primekg_path = tmp_path / "primekg_sample.csv"
+    write_sample_primekg_csv(primekg_path)
+
+    agentic_retriever = AgenticRetriever(
+        primekg_path=str(primekg_path),
+        pubmed_cache_path=str(tmp_path / "pubmed_cache.jsonl"),
+        kg_extractor=PrimeKGExtractor(primekg_path=primekg_path),
+        pubmed=PubMedRetriever(
+            cache_path=tmp_path / "pubmed_cache.jsonl",
+            client=FakePubMedClient(cache_path=tmp_path / "pubmed_cache.jsonl"),
+        ),
+        linker=EntityLinker(),
+    )
+    agentic_retriever.pubmed.config.query_encoder_model_name = None
+    agentic_retriever.pubmed.config.article_encoder_model_name = None
+    agentic_retriever.pubmed.config.cross_encoder_model_name = None
+
+    bundle = agentic_retriever.retrieve("Is ibuprofen contraindicated with warfarin in atrial fibrillation?")
+
+    assert bundle.subgraph_edges

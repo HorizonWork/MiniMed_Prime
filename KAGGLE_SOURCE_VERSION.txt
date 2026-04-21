@@ -1,5 +1,0 @@
-﻿MiniMed Prime Kaggle source package
-version: 2026-04-21-ticket-019-relation-filter-routing
-notes:
-- Add shared question-type-aware relation filter routing for PrimeKG retrieval with alias normalization and fallback chain.
-- Wire retrieval callers/scripts/trace to shared logic and expose structured relation-filter stats.

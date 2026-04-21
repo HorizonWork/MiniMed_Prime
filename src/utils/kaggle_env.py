@@ -23,7 +23,11 @@ class KaggleEnv:
 
     INPUT_ROOT = Path("/kaggle/input")
     WORKING_ROOT = Path("/kaggle/working")
-    LOCAL_ASSET_ROOT = Path(os.environ.get("MINIMED_KAGGLE_ASSETS", r"D:\CapstoneProjectSP26\kaggle_assets"))
+    LOCAL_ASSET_ROOT = Path(
+        os.environ.get(
+            "MINIMED_KAGGLE_ASSETS", "/home/n91ym1nhky/Projects/ext-minimed/data"
+        )
+    )
     DATASET_MOUNT_ALIASES = {
         "data/medreason": "medreason",
         "data/datasets/medreason": "medreason",

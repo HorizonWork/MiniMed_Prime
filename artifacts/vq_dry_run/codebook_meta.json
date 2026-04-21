@@ -1,0 +1,11 @@
+{
+  "codebook_size": 4096,
+  "codebook_version": "vqcb-20260420T183309-f688882b0c41",
+  "created_at": "2026-04-20T18:33:09.404766+00:00",
+  "hidden_dim": 256,
+  "node_type_schema_hash": "f0ae1d43fda04cdfa006159d662299a05068d71128ffe590d698566857feeb76",
+  "num_subgraphs_seen": 1000,
+  "relation_schema_hash": "1af51a21409a1a212d761db9db632e33e930d620fce482068d86e34152c8c641",
+  "seed": 42,
+  "source_graph_signature": "b0de9c9cacac5609f7d4e9cf127b1d76746c3528250d8a7512bc5cfbd00659f2"
+}

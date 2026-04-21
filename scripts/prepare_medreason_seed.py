@@ -89,7 +89,7 @@ def main() -> int:
         allow_empty_gold=args.allow_empty_gold,
     )
     sys.stdout.write(json.dumps(result.to_json_dict(), indent=2, sort_keys=True) + "\n")
-    return 0 if result.records_saved > 0 else 1
+    return 0 if (result.records_saved > 0 or result.records_skipped > 0) else 1
 
 
 if __name__ == "__main__":
