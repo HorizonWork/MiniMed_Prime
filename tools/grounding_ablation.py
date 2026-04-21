@@ -7,13 +7,12 @@ import sys
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.layers.layer1_retrieval import AgenticRetriever, PrimeKGExtractor  # noqa: E402
 from src.retrieval import (  # noqa: E402
     DeterministicSeedGrounder,
     LLMAssistedSeedGrounder,
@@ -33,6 +32,9 @@ from src.training.medreason_adapter import (  # noqa: E402
     resolve_edge_mapper_config,
 )
 from src.utils.kaggle_env import KaggleEnv  # noqa: E402
+
+if TYPE_CHECKING:
+    from src.layers.layer1_retrieval import AgenticRetriever
 
 
 @dataclass(slots=True)
@@ -303,6 +305,8 @@ def audit_grounding_coverage(
 
 
 def _build_retriever(*, include_pubmed: bool = False) -> AgenticRetriever:
+    from src.layers.layer1_retrieval import AgenticRetriever
+
     retriever = AgenticRetriever(
         primekg_path=KaggleEnv.path("data/kg/primekg"),
         pubmed_cache_path=KaggleEnv.path("data/pubmed_cache.jsonl"),

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -149,3 +151,38 @@ def test_audit_grounding_coverage_runs_without_graph_extraction(tmp_path: Path) 
     assert payload["summary"]["record_count"] == 2
     assert "record_any_link_rate" in payload["summary"]
     assert "record_all_unresolved_rate" in payload["summary"]
+
+
+def test_grounding_ablation_imports_without_layer1_for_coverage_path(tmp_path: Path) -> None:
+    probe = tmp_path / "probe_import.py"
+    repo_root = Path(__file__).resolve().parents[1]
+    probe.write_text(
+        "\n".join(
+            [
+                "import builtins",
+                "import sys",
+                f"sys.path.insert(0, {repr(str(repo_root))})",
+                "real_import = builtins.__import__",
+                "def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):",
+                "    if name == 'src.layers.layer1_retrieval' or name.startswith('src.layers.layer1_retrieval'):",
+                "        raise ImportError('blocked layer1 import')",
+                "    return real_import(name, globals, locals, fromlist, level)",
+                "builtins.__import__ = blocked_import",
+                "import tools.grounding_ablation",
+                "print('ok')",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(probe)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout

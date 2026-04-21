@@ -6,11 +6,10 @@ import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
 from pydantic import BaseModel, Field
 
-from src.layers.layer1_retrieval import AgenticRetriever
 from src.retrieval import (
     DEFAULT_GEMINI_GROUNDER,
     DEFAULT_OPENAI_GROUNDER,
@@ -31,6 +30,9 @@ from src.schemas import EvidenceBundle, KGEdge, PubMedPassage, QuestionEntity
 from src.training.trm_dataset_builder import parse_reasoning_chain
 from src.utils.kaggle_env import KaggleEnv
 from src.utils.structured_logger import DEFAULT_LOG_DIR, StructuredLogger
+
+if TYPE_CHECKING:
+    from src.layers.layer1_retrieval import AgenticRetriever
 
 
 DEFAULT_MEDREASON_SOURCE = "data/medreason"

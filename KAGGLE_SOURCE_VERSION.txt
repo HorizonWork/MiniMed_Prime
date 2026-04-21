@@ -1,5 +1,6 @@
 ﻿MiniMed Prime Kaggle source package
-version: 2026-04-21-ticket-020-medreason-artifact-json-skip
+version: 2026-04-21-ticket-020-coverage-lazy-import-fix
 notes:
-- Skip model artifact JSON files such as model.safetensors.index.json and continue scanning for real MedReason record files.
-- Validation: py_compile + pytest for medreason adapter local dataset discovery and seed export tests.
+- Make grounding coverage path lazy-import layer1 retrieval so coverage mode does not require pandas/numpy graph stack at module import time.
+- Continue skipping MedReason artifact JSON files when scanning local dataset directories.
+- Validation: py_compile + pytest for grounding ablation tool import path and medreason adapter loading.
