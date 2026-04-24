@@ -1,0 +1,8 @@
+retrieval:
+  name: bm25_only
+  retriever: bm25
+  top_k: 10
+  max_context_chars: 2000
+  bm25:
+    index_path: artifacts/indexes/bm25_textbooks.pkl
+    candidate_k: 50

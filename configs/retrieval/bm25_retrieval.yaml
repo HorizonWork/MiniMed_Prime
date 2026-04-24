@@ -1,1 +1,12 @@
-bm25_retrieval: {index: minimed_chunks_v1, top_k: 100}
+bm25_retrieval:
+  # OpenSearch index (used by HybridRetriever in the full pipeline)
+  index: minimed_chunks_v1
+  top_k: 100
+
+  # Standalone local BM25 (used by LocalBM25Retriever for benchmark eval)
+  # corpus options: pubmed (21M abstracts), textbooks (125k chunks, 18 books)
+  corpus:
+    - textbooks
+  local_top_k: 10
+  index_path: artifacts/indexes/bm25_textbooks.pkl
+  max_context_chars: 2000

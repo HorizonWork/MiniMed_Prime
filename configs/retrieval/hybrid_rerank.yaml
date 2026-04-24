@@ -1,0 +1,22 @@
+retrieval:
+  name: hybrid_rerank
+  retriever: hybrid_rerank
+  top_k: 10
+  max_context_chars: 2000
+  fusion:
+    method: rrf
+    rrf_k: 60
+    weights:
+      bm25: 1.0
+      dense: 1.0
+  bm25:
+    index_path: artifacts/indexes/bm25_textbooks.pkl
+    candidate_k: 50
+  dense:
+    index_path: artifacts/indexes/dense_textbooks_bge-small-en-v1.5
+    model_name: BAAI/bge-small-en-v1.5
+    candidate_k: 50
+  reranker:
+    enabled: true
+    model_name: cross-encoder/ms-marco-MiniLM-L-6-v2
+    rerank_top_k: 20

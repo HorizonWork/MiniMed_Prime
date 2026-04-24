@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(slots=True)
 class EntityRepo:
-    rows: dict[str, object] = field(default_factory=dict)
-    identifier_index: dict[tuple[str, str], list[object]] = field(default_factory=dict)
-    cui_index: dict[str, list[object]] = field(default_factory=dict)
-    source_index: dict[str, object] = field(default_factory=dict)
+    rows: dict[str, Any] = field(default_factory=dict)
+    identifier_index: dict[tuple[str, str], list[Any]] = field(default_factory=dict)
+    cui_index: dict[str, list[Any]] = field(default_factory=dict)
+    source_index: dict[str, Any] = field(default_factory=dict)
 
     def get(self, entity_id: str):
         return self.rows.get(entity_id)

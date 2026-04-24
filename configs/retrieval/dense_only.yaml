@@ -1,0 +1,9 @@
+retrieval:
+  name: dense_only
+  retriever: dense
+  top_k: 10
+  max_context_chars: 2000
+  dense:
+    index_path: artifacts/indexes/dense_textbooks_bge-small-en-v1.5
+    model_name: BAAI/bge-small-en-v1.5
+    candidate_k: 50

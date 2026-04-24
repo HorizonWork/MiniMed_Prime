@@ -1,13 +1,22 @@
+# Ignore env
 .venv/
 venv/
 medenv/
+.env
+
+# Ignore IDE
+.DS_Store
+.claude/
+.codex
+
+# Ignore language server
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.claude/
-.env
-.DS_Store
-artifacts/reports/*.json
-artifacts/exports/*
+
+# Ignore fodlers
+data/
+artifacts/
+notes/

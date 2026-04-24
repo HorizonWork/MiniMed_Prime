@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(slots=True)
 class ObjectStore:
     bucket: str = "minimed"
-    client: object | None = None
+    client: Any | None = None
     memory: dict[str, bytes] = field(default_factory=dict)
 
     def put(self, path: str, data: bytes, metadata: dict | None = None) -> None:

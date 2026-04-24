@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(slots=True)
 class Neo4j:
-    driver: object
+    driver: Any
 
     def run(self, cypher: str, **params):
         with self.driver.session() as session:

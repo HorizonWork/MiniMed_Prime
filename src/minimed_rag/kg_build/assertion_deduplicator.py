@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class AssertionDeduplicator:
     def deduplicate(self, assertions: list) -> list:
-        grouped = {}
+        grouped: dict[tuple[Any, ...], list[Any]] = {}
         for assertion in assertions:
             key = (
                 assertion.subject_id,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class NEREnsemble:
     def __init__(self, models):
@@ -14,7 +16,7 @@ class NEREnsemble:
         return self.deduplicate(mentions)
 
     def deduplicate(self, mentions: list) -> list:
-        by_span = {}
+        by_span: dict[tuple[int, int, str], Any] = {}
         for mention in mentions:
             key = (mention.start, mention.end, mention.text.casefold())
             if key not in by_span or mention.score > by_span[key].score:

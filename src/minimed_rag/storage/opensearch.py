@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(slots=True)
 class OpenSearch:
-    client: object
+    client: Any
 
     def ensure_index(self, index: str, body: dict) -> None:
         if not self.client.indices.exists(index=index):

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(slots=True)
 class Milvus:
-    client: object
+    client: Any
 
     def ensure_collection(self, name: str, schema: dict) -> None:
         if not self.client.has_collection(name):

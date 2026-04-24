@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(slots=True)
 class Postgres:
-    conn: object
+    conn: Any
 
     def execute(self, sql: str, params: dict | None = None):
         with self.conn.cursor() as cur:
