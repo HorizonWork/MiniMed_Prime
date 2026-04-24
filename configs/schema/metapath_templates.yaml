@@ -1,0 +1,31 @@
+metapaths:
+  treatment_direct:
+    task_type: treatment
+    pattern: [[Drug, treats, Disease]]
+    max_depth: 1
+    priority: 1.0
+    min_edge_confidence: 0.75
+  treatment_mechanism:
+    task_type: treatment
+    pattern: [[Drug, targets, Gene], [Gene, gene_associated_with_disease, Disease]]
+    max_depth: 2
+    priority: 0.85
+    min_edge_confidence: 0.60
+  adverse_effect_direct:
+    task_type: adverse_effect
+    pattern: [[Drug, causes_adverse_event, AdverseEvent]]
+    max_depth: 1
+    priority: 1.0
+    min_edge_confidence: 0.70
+  adverse_effect_manifestation:
+    task_type: adverse_effect
+    pattern: [[Drug, causes_adverse_event, AdverseEvent], [AdverseEvent, manifested_as, Finding]]
+    max_depth: 2
+    priority: 0.95
+    min_edge_confidence: 0.65
+  mechanism_drug_pathway_disease:
+    task_type: mechanism
+    pattern: [[Drug, targets, Protein], [Protein, participates_in, Pathway], [Pathway, involved_in, Disease]]
+    max_depth: 3
+    priority: 0.8
+    min_edge_confidence: 0.60

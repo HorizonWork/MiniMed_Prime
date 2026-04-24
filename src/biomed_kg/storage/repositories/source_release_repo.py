@@ -1,0 +1,26 @@
+"""Pseudocode repository for source_release_repo."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Iterable
+
+
+@dataclass(slots=True)
+class SourceReleaseRepo:
+    rows: dict[str, object] = field(default_factory=dict)
+
+    def get(self, key: str):
+        return self.rows.get(key)
+
+    def upsert(self, key: str, value: object) -> None:
+        self.rows[key] = value
+
+    def write_many(self, records: Iterable, key_attr: str = "id") -> None:
+        for record in records:
+            key = getattr(record, key_attr, None)
+            if key is None and isinstance(record, dict):
+                key = record.get(key_attr)
+            self.rows[str(key)] = record
+
+    def iter_all(self):
+        return iter(self.rows.values())

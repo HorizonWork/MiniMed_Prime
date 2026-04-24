@@ -1,0 +1,9 @@
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix kg: <https://example.org/biomedkg/> .
+
+kg:EntityShape a sh:NodeShape ;
+    sh:targetClass kg:Entity ;
+    sh:property [ sh:path kg:entity_id ; sh:datatype xsd:string ; sh:minCount 1 ] ;
+    sh:property [ sh:path kg:entity_type ; sh:datatype xsd:string ; sh:minCount 1 ] ;
+    sh:property [ sh:path kg:preferred_name ; sh:datatype xsd:string ; sh:minCount 1 ] .

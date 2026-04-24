@@ -1,0 +1,5 @@
+source: umls
+enabled: true
+release: local
+raw_prefix: bronze/umls
+normalized_table: silver_umls_records

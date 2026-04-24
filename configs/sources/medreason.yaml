@@ -1,0 +1,5 @@
+source: medreason
+enabled: true
+release: local
+raw_prefix: bronze/medreason
+normalized_table: silver_medreason_records

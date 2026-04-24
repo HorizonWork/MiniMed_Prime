@@ -1,0 +1,1 @@
+graph_retrieval: {limit: 50, min_confidence: 0.60, prune_generic_hubs: true}

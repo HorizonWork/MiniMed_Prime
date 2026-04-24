@@ -1,0 +1,90 @@
+predicates:
+  treats:
+    id: PRED:TREATS
+    domain: [Drug, Procedure, Therapy]
+    range: [Disease, Condition]
+    directional: true
+    inverse: treated_by
+    allowed_tasks: [treatment, drug_repurposing, rag]
+    disallowed_tasks: [adverse_effect]
+    min_confidence_for_training: 0.75
+    default_weight: 1.0
+    allow_as_gold_path: true
+  causes_adverse_event:
+    id: PRED:CAUSES_ADVERSE_EVENT
+    domain: [Drug, Chemical]
+    range: [AdverseEvent, Symptom, Finding]
+    directional: true
+    inverse: adverse_event_of
+    allowed_tasks: [adverse_effect, safety]
+    disallowed_tasks: [treatment]
+    min_confidence_for_training: 0.70
+    default_weight: 1.0
+    allow_as_gold_path: true
+  associated_with:
+    id: PRED:ASSOCIATED_WITH
+    domain: [Entity]
+    range: [Entity]
+    directional: false
+    inverse: associated_with
+    allowed_tasks: [candidate_generation, mechanism, discovery]
+    disallowed_tasks: [direct_treatment_answer, adverse_effect_answer]
+    min_confidence_for_training: 0.85
+    default_weight: 0.35
+    max_per_path: 1
+    allow_as_gold_path: false
+  targets:
+    id: PRED:TARGETS
+    domain: [Drug, Chemical]
+    range: [Gene, Protein]
+    directional: true
+    inverse: target_of
+    allowed_tasks: [mechanism, treatment]
+    disallowed_tasks: []
+    min_confidence_for_training: 0.60
+    default_weight: 0.8
+    allow_as_gold_path: true
+  gene_associated_with_disease:
+    id: PRED:GENE_ASSOCIATED_WITH_DISEASE
+    domain: [Gene, Protein]
+    range: [Disease, Condition]
+    directional: false
+    inverse: disease_associated_with_gene
+    allowed_tasks: [mechanism, treatment]
+    disallowed_tasks: []
+    min_confidence_for_training: 0.60
+    default_weight: 0.7
+    allow_as_gold_path: true
+  manifested_as:
+    id: PRED:MANIFESTED_AS
+    domain: [AdverseEvent, Disease, Condition]
+    range: [Finding, Symptom]
+    directional: true
+    inverse: manifestation_of
+    allowed_tasks: [adverse_effect, rag]
+    disallowed_tasks: []
+    min_confidence_for_training: 0.65
+    default_weight: 0.9
+    allow_as_gold_path: true
+  participates_in:
+    id: PRED:PARTICIPATES_IN
+    domain: [Gene, Protein]
+    range: [Pathway]
+    directional: true
+    inverse: has_participant
+    allowed_tasks: [mechanism]
+    disallowed_tasks: []
+    min_confidence_for_training: 0.60
+    default_weight: 0.75
+    allow_as_gold_path: true
+  involved_in:
+    id: PRED:INVOLVED_IN
+    domain: [Pathway]
+    range: [Disease, Condition]
+    directional: true
+    inverse: involves_pathway
+    allowed_tasks: [mechanism]
+    disallowed_tasks: []
+    min_confidence_for_training: 0.60
+    default_weight: 0.75
+    allow_as_gold_path: true

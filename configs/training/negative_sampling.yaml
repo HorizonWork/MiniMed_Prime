@@ -1,0 +1,1 @@
+negative_sampling: {max_per_task: 10}

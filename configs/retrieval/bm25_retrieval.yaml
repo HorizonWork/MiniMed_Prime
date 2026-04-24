@@ -1,0 +1,1 @@
+bm25_retrieval: {index: biomed_chunks_v1, top_k: 100}

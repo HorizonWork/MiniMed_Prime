@@ -1,0 +1,5 @@
+source: statpearls
+enabled: true
+release: local
+raw_prefix: bronze/statpearls
+normalized_table: silver_statpearls_records

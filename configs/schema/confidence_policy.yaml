@@ -1,0 +1,20 @@
+assertion_confidence:
+  weights:
+    source_reliability: 0.25
+    entity_linking_confidence: 0.20
+    relation_extraction_confidence: 0.20
+    evidence_strength: 0.15
+    consensus_score: 0.10
+    recency_score: 0.05
+    conflict_score: -0.15
+source_reliability:
+  umls: 0.90
+  primekg: 0.80
+  pubmed_extracted: 0.65
+  statpearls: 0.75
+  comention_only: 0.30
+path_confidence:
+  use_min_edge_confidence: true
+  hub_penalty_weight: 0.25
+  associated_with_penalty: 0.50
+  missing_evidence_penalty: 0.40

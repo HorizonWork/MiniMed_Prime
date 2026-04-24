@@ -1,0 +1,3 @@
+evidence_policy:
+  min_spans_per_assertion: 1
+  unsupported_assertion_action: downgrade_confidence

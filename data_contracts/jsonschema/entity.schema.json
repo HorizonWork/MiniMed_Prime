@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "entity",
+  "type": "object",
+  "required": [
+    "entity_id",
+    "entity_type",
+    "preferred_name"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "entity_id": {
+      "type": "string"
+    },
+    "entity_type": {
+      "type": "string"
+    },
+    "preferred_name": {
+      "type": "string"
+    }
+  }
+}

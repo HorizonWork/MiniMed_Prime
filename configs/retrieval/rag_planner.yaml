@@ -1,0 +1,1 @@
+planner: {default_task_type: rag, max_depth: 3, max_context_items: 20}

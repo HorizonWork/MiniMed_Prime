@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS reasoning_task (task_id TEXT PRIMARY KEY, dataset_name TEXT NOT NULL, question TEXT NOT NULL, task_type TEXT NOT NULL, correct_answer TEXT, metadata JSONB DEFAULT '{}'::jsonb);
+CREATE TABLE IF NOT EXISTS candidate_answer (candidate_answer_id TEXT PRIMARY KEY, task_id TEXT REFERENCES reasoning_task(task_id), answer_text TEXT NOT NULL, linked_entity_id TEXT);
+CREATE TABLE IF NOT EXISTS reasoning_path (path_id TEXT PRIMARY KEY, task_id TEXT REFERENCES reasoning_task(task_id), path_type TEXT NOT NULL, start_entity_id TEXT NOT NULL, end_entity_id TEXT NOT NULL, task_type TEXT NOT NULL, metapath_template_id TEXT, path_confidence DOUBLE PRECISION, validity_label TEXT, graph_version TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reasoning_path_step (path_id TEXT REFERENCES reasoning_path(path_id), step_index INTEGER NOT NULL, subject_entity_id TEXT NOT NULL, predicate TEXT NOT NULL, object_entity_id TEXT NOT NULL, assertion_id TEXT, edge_confidence DOUBLE PRECISION, direction TEXT, evidence_ids TEXT[] DEFAULT '{}', PRIMARY KEY(path_id, step_index));
+CREATE TABLE IF NOT EXISTS path_evidence (path_id TEXT REFERENCES reasoning_path(path_id), evidence_id TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS path_label (path_id TEXT REFERENCES reasoning_path(path_id), label TEXT NOT NULL, source TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS negative_path (path_id TEXT REFERENCES reasoning_path(path_id), negative_type TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS metapath_template_instance (instance_id TEXT PRIMARY KEY, template_id TEXT NOT NULL, task_id TEXT REFERENCES reasoning_task(task_id), graph_version TEXT NOT NULL);

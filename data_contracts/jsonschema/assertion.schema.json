@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "assertion",
+  "type": "object",
+  "required": [
+    "assertion_id",
+    "subject_id",
+    "predicate",
+    "object_id"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "assertion_id": {
+      "type": "string"
+    },
+    "subject_id": {
+      "type": "string"
+    },
+    "predicate": {
+      "type": "string"
+    },
+    "object_id": {
+      "type": "string"
+    }
+  }
+}

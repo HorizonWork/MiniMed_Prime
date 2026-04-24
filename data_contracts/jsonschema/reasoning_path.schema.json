@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "reasoning_path",
+  "type": "object",
+  "required": [
+    "path_id",
+    "task_id",
+    "steps"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "path_id": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "steps": {
+      "type": "string"
+    }
+  }
+}

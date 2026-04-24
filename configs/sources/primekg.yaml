@@ -1,0 +1,5 @@
+source: primekg
+enabled: true
+release: local
+raw_prefix: bronze/primekg
+normalized_table: silver_primekg_records

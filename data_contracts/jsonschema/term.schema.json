@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "term",
+  "type": "object",
+  "required": [
+    "term_id",
+    "concept_id",
+    "text"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "term_id": {
+      "type": "string"
+    },
+    "concept_id": {
+      "type": "string"
+    },
+    "text": {
+      "type": "string"
+    }
+  }
+}

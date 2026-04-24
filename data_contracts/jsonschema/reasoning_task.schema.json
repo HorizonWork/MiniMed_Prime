@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "reasoning_task",
+  "type": "object",
+  "required": [
+    "task_id",
+    "question"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "task_id": {
+      "type": "string"
+    },
+    "question": {
+      "type": "string"
+    }
+  }
+}

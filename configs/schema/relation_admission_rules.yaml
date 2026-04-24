@@ -1,0 +1,3 @@
+relation_admission_rules:
+  default: {require_valid_domain_range: true, require_evidence_for_extracted_relations: true, min_confidence: 0.50}
+  training: {require_gold_path_allowed: true, require_current_assertion: true}

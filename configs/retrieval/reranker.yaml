@@ -1,0 +1,1 @@
+reranker: {model: cross-encoder, top_k: 20}

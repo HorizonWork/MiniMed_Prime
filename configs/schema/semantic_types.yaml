@@ -1,0 +1,6 @@
+semantic_types:
+  T047: {name: Disease or Syndrome, entity_type: Disease}
+  T121: {name: Pharmacologic Substance, entity_type: Drug}
+  T184: {name: Sign or Symptom, entity_type: Symptom}
+  T028: {name: Gene or Genome, entity_type: Gene}
+  T116: {name: Amino Acid Peptide or Protein, entity_type: Protein}

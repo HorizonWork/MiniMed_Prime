@@ -1,0 +1,14 @@
+entity_types:
+  Entity: {description: Generic biomedical entity}
+  Drug: {parent: Entity}
+  Chemical: {parent: Entity}
+  Disease: {parent: Entity}
+  Condition: {parent: Disease}
+  Symptom: {parent: Entity}
+  Finding: {parent: Entity}
+  AdverseEvent: {parent: Entity}
+  Gene: {parent: Entity}
+  Protein: {parent: Entity}
+  Pathway: {parent: Entity}
+  Procedure: {parent: Entity}
+  Therapy: {parent: Entity}

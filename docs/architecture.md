@@ -1,0 +1,3 @@
+# Architecture
+
+Scaffold for architecture.

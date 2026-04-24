@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "raw_source_record",
+  "type": "object",
+  "required": [
+    "source_system",
+    "source_record_id"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "source_system": {
+      "type": "string"
+    },
+    "source_record_id": {
+      "type": "string"
+    }
+  }
+}

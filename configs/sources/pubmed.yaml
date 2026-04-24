@@ -1,0 +1,5 @@
+source: pubmed
+enabled: true
+release: local
+raw_prefix: bronze/pubmed
+normalized_table: silver_pubmed_records
