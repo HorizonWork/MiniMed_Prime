@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-biomedkg ingest pubmed --mode baseline --release "${RELEASE:-local}"
+minimed ingest pubmed --mode baseline --release "${RELEASE:-local}"

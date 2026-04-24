@@ -2,14 +2,14 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_DB: biomedkg
-      POSTGRES_USER: biomedkg
-      POSTGRES_PASSWORD: biomedkg
+      POSTGRES_DB: minimed
+      POSTGRES_USER: minimed
+      POSTGRES_PASSWORD: minimed
     ports: ["5432:5432"]
   neo4j:
     image: neo4j:5
     environment:
-      NEO4J_AUTH: neo4j/biomedkg
+      NEO4J_AUTH: neo4j/minimed
     ports: ["7474:7474", "7687:7687"]
   minio:
     image: minio/minio:latest

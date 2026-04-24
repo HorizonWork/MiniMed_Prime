@@ -1,21 +1,64 @@
-.PHONY: up down api quality ingest-primekg ingest-umls build-kg build-indexes train-trm evaluate
+.PHONY: install test lint type-check smoke up down api \
+        quality ingest-primekg ingest-umls build-kg build-indexes train-trm evaluate
+
+# ── Dev setup ────────────────────────────────────────────────────────────────
+
+install:
+	uv sync --extra dev
+
+# ── Quality ───────────────────────────────────────────────────────────────────
+
+lint:
+	uv run ruff check src/ tests/
+	uv run ruff format --check src/ tests/
+
+lint-fix:
+	uv run ruff check --fix src/ tests/
+	uv run ruff format src/ tests/
+
+type-check:
+	uv run mypy src/minimed_rag/
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+
+test:
+	uv run pytest tests/unit/ -v
+
+smoke:
+	uv run pytest tests/unit/ -v -x --tb=short
+
+# ── Services (Docker) ─────────────────────────────────────────────────────────
+
 up:
 	docker compose up -d
+
 down:
 	docker compose down
+
+# ── Local API server ──────────────────────────────────────────────────────────
+
 api:
-	uvicorn biomed_kg.api.main:app --host 0.0.0.0 --port 8000 --reload
+	uv run uvicorn minimed_rag.api.main:app --host 0.0.0.0 --port 8000 --reload
+
+# ── Pipeline targets ──────────────────────────────────────────────────────────
+
 quality:
-	biomedkg evaluate all --graph-version $${GRAPH_VERSION:-kg_local}
+	minimed evaluate all --graph-version $${GRAPH_VERSION:-kg_local}
+
 ingest-primekg:
-	biomedkg ingest primekg --release $${RELEASE:-local}
+	minimed ingest primekg --release $${RELEASE:-local}
+
 ingest-umls:
-	biomedkg ingest umls --release $${RELEASE:-local}
+	minimed ingest umls --release $${RELEASE:-local}
+
 build-kg:
-	biomedkg build-kg --graph-version $${GRAPH_VERSION:-kg_local}
+	minimed build-kg --graph-version $${GRAPH_VERSION:-kg_local}
+
 build-indexes:
-	biomedkg build-indexes all --graph-version $${GRAPH_VERSION:-kg_local}
+	minimed build-indexes all --graph-version $${GRAPH_VERSION:-kg_local}
+
 train-trm:
-	biomedkg train-trm --config configs/training/trm_training.yaml --graph-version $${GRAPH_VERSION:-kg_local}
+	minimed train-trm --config configs/training/trm_training.yaml --graph-version $${GRAPH_VERSION:-kg_local}
+
 evaluate:
-	biomedkg evaluate all --graph-version $${GRAPH_VERSION:-kg_local}
+	minimed evaluate all --graph-version $${GRAPH_VERSION:-kg_local}

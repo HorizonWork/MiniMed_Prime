@@ -1,6 +1,6 @@
 @prefix sh: <http://www.w3.org/ns/shacl#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-@prefix kg: <https://example.org/biomedkg/> .
+@prefix kg: <https://example.org/minimed/> .
 
 kg:AssertionShape a sh:NodeShape ;
     sh:targetClass kg:Assertion ;

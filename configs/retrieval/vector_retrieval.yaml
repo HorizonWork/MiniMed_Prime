@@ -1,1 +1,1 @@
-vector_retrieval: {collection: biomed_chunk_dense_v1, top_k: 100, metric_type: COSINE}
+vector_retrieval: {collection: minimed_chunk_dense_v1, top_k: 100, metric_type: COSINE}
