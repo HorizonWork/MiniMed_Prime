@@ -1,7 +1,0 @@
-MiniMed Prime Kaggle source package
-version: 2026-04-20-ticket-024-posthoc-auditor
-notes:
-- Added post-hoc LLM auditor module with strict JSON schema, retry, and deterministic fallback
-- Added CLI tools/run_posthoc_audit.py for sample/trace auditing and artifact export
-- Added optional post-hoc audit hook in tools/trace_one_sample.py final verdict flow
-- Updated Kaggle packaging/notebooks to extract tools, judges, prompts, and schemas archives
