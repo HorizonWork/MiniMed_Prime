@@ -9,7 +9,10 @@ dependencies = [
     "datasets",
     "fastapi",
     "neo4j",
-    "numpy",
+    # numpy<2 is required by the `kg` extra (scispacy 0.5 → spacy 3.7 → thinc 8.2
+    # is built against numpy 1 ABI). Keep the constraint on the core dep so
+    # `uv sync` with or without --extra kg stays consistent.
+    "numpy<2.0",
     "opensearch-py",
     "prefect",
     "psycopg[binary]",
@@ -37,6 +40,12 @@ benchmark = [
     "transformers",
     "accelerate",
 ]
+kg = [
+    "scispacy>=0.5.4",
+    "spacy>=3.7,<4.0",
+    "pandas>=2.0",
+    "python-dotenv",
+]
 
 [project.scripts]
 minimed = "minimed_rag.cli.main:app"
@@ -51,6 +60,9 @@ packages = ["src/minimed_rag"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+markers = [
+    "integration: tests requiring live Docker services (Neo4j, Postgres, etc.); gated by RUN_INTEGRATION=1",
+]
 
 [tool.ruff]
 line-length = 100

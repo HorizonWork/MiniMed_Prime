@@ -52,17 +52,19 @@ Interactive docs: <http://localhost:8000/docs>
 ```bash
 uv run minimed --help
 
-# Ingest a source
-uv run minimed ingest source primekg --release local
+# Ingest a source (Phase 4)
+uv run minimed ingest primekg --release local
+uv run minimed ingest umls    --release local
 
 # Build the canonical KG
-uv run minimed build-kg --graph-version kg_local
+uv run minimed build-kg apply-schema --graph-version kg_local
+uv run minimed build-kg crosswalk    --graph-version kg_local
 
 # Build serving indexes
 uv run minimed build-indexes all --graph-version kg_local
 
-# Ask a RAG question
-uv run minimed rag ask "What drugs treat type 2 diabetes?" --graph-version kg_local
+# Ask a RAG question (Phase 4 --use-kg injects KG neighbors into the prompt)
+uv run minimed rag query "What is metformin used for?" --use-kg
 
 # Generate reasoning paths
 uv run minimed generate-paths --graph-version kg_local
@@ -72,6 +74,27 @@ uv run minimed train-trm --config configs/training/trm_training.yaml --graph-ver
 
 # Evaluate
 uv run minimed evaluate all --graph-version kg_local
+```
+
+### Phase 4 — Knowledge Graph MVP
+
+See [`docs/phase4_runbook.md`](docs/phase4_runbook.md) for the end-to-end
+runbook. Short version:
+
+```bash
+# One-time prep
+uv sync --extra dev --extra kg
+bash scripts/download_scispacy_models.sh
+bash scripts/bootstrap_postgres_schema.sh
+bash scripts/download_primekg.sh                  # downloads ~1.5 GB CSV
+# UMLS requires an NLM license — place MRCONSO.RRF / MRSTY.RRF / MRREL.RRF under
+# data/umls/local/ before running `ingest umls`.
+
+# Bootstrap the graph
+make kg-bootstrap                                 # schema → primekg → umls → crosswalk
+
+# Ask with KG
+uv run minimed rag query "What is metformin used for?" --use-kg
 ```
 
 ---
@@ -141,3 +164,8 @@ tests/
 | `MINIO_SECRET_KEY` | `minio123` | — |
 | `MILVUS_URI` | `http://localhost:19530` | Vector DB |
 | `OPENSEARCH_URL` | `http://localhost:9200` | BM25 search |
+| `PRIMEKG_DATA_DIR` | `data/primekg` | Local dir for the PrimeKG CSV |
+| `PRIMEKG_DOWNLOAD_URL` | Harvard Dataverse datafile 6180626 | Source URL |
+| `UMLS_DATA_DIR` | `data/umls` | Local dir for the UMLS RRF files (license required) |
+| `SCISPACY_MODEL` | `en_core_sci_lg` | scispacy model name for the entity linker |
+| `SCISPACY_UMLS_LINKER` | `true` | Whether to chain the bundled UMLS linker |

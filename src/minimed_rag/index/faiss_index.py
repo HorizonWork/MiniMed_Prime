@@ -96,7 +96,9 @@ class FaissIndex:
     def search(self, query_embedding: np.ndarray, k: int = 10) -> list[Chunk]:
         return [chunk for chunk, _score in self.search_with_scores(query_embedding, k=k)]
 
-    def search_with_scores(self, query_embedding: np.ndarray, k: int = 10) -> list[tuple[Chunk, float]]:
+    def search_with_scores(
+        self, query_embedding: np.ndarray, k: int = 10
+    ) -> list[tuple[Chunk, float]]:
         if not self._chunks or self._vectors is None:
             return []
 

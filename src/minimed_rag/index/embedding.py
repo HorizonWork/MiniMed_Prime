@@ -67,7 +67,9 @@ class TransformerEmbedder:
         """Encode queries, adding the BGE retrieval instruction when appropriate."""
         if "bge-" not in self.model_name.lower():
             return self.encode(texts)
-        instructed = [f"Represent this sentence for searching relevant passages: {text}" for text in texts]
+        instructed = [
+            f"Represent this sentence for searching relevant passages: {text}" for text in texts
+        ]
         return self.encode(instructed)
 
     def _ensure_model(self) -> None:

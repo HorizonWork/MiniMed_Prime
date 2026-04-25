@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class ChunkRetriever(Protocol):
-    def retrieve(self, query: str, k: int | None = None) -> list["RetrievalResult"]: ...
+    def retrieve(self, query: str, k: int | None = None) -> list[RetrievalResult]: ...
 
 
 def _config_hash(config: dict) -> str:
@@ -148,9 +148,7 @@ def run_evaluation(
             corpus_hit_rate=retrieval_hits / total if total else 0.0,
             avg_score=sum(retrieval_scores) / len(retrieval_scores) if retrieval_scores else 0.0,
             avg_latency_s=(
-                sum(retrieval_latencies) / len(retrieval_latencies)
-                if retrieval_latencies
-                else 0.0
+                sum(retrieval_latencies) / len(retrieval_latencies) if retrieval_latencies else 0.0
             ),
         )
 

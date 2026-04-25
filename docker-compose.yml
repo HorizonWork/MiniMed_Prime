@@ -10,6 +10,10 @@ services:
     image: neo4j:5
     environment:
       NEO4J_AUTH: neo4j/minimed123
+      NEO4J_server_memory_heap_initial__size: 1G
+      NEO4J_server_memory_heap_max__size: 4G
+      NEO4J_server_memory_pagecache_size: 2G
+      NEO4J_db_transaction_timeout: 30m
     ports: ["7474:7474", "7687:7687"]
   minio:
     image: minio/minio:latest
