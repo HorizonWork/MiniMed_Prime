@@ -6,11 +6,13 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from minimed_rag.kg.assertion_validator import AssertionDirectionValidator
 from minimed_rag.kg.graph_client import (
     FIND_CONCEPT_BY_CUI_CYPHER,
     FIND_ENTITY_BY_CUI_CYPHER,
     FIND_ENTITY_BY_NAME_CYPHER,
     GET_NEIGHBORS_DEPTH_1_CYPHER,
+    GET_TWO_HOP_PATHS_CYPHER,
     GraphClient,
 )
 
@@ -26,6 +28,19 @@ class FakeNeo4j:
             if key in cypher:
                 return rows
         return []
+
+
+class FakePredicateRegistry:
+    def __init__(self, valid: set[tuple[str, str, str]], predicates: set[str] | None = None):
+        self.valid = valid
+        self.rules = {predicate: object() for predicate in (predicates or set())}
+        self.rules.update({predicate: object() for predicate, _, _ in valid})
+
+    def all(self) -> dict[str, object]:
+        return self.rules
+
+    def is_valid_domain_range(self, predicate: str, subject_type: str, object_type: str) -> bool:
+        return (predicate, subject_type, object_type) in self.valid
 
 
 def test_get_neighbors_depth_1_builds_expected_cypher():
@@ -47,8 +62,8 @@ def test_get_neighbors_depth_1_builds_expected_cypher():
                         "polarity": "positive",
                         "source_system": "primekg",
                     },
-                    "role_in": "OBJECT",
-                    "role_out": "SUBJECT",
+                    "role_in": "SUBJECT",
+                    "role_out": "OBJECT",
                 }
             ],
         }
@@ -60,6 +75,9 @@ def test_get_neighbors_depth_1_builds_expected_cypher():
     assert "MATCH (anchor)" in cypher
     assert "a.is_current = true" in cypher
     assert "a.confidence >= $min_conf" in cypher
+    assert "a.predicate = 'treats'" not in cypher
+    assert "subject, object" in cypher
+    assert "labels(subject) AS subject_labels" in cypher
     assert "role_in:SUBJECT|OBJECT" in cypher
     assert params == {"key": "C0025598", "limit": 10, "min_conf": 0.3}
     assert cypher == GET_NEIGHBORS_DEPTH_1_CYPHER
@@ -72,6 +90,195 @@ def test_get_neighbors_depth_1_builds_expected_cypher():
     assert n.confidence == 0.9
     assert n.polarity == "positive"
     assert n.direction == "out"
+
+
+def test_get_neighbors_anchor_as_object_marks_incoming_direction():
+    neo4j = FakeNeo4j(
+        responses={
+            "MATCH (anchor)": [
+                {
+                    "neighbor": {
+                        "entity_id": "KG:Drug:m",
+                        "preferred_name": "Metformin",
+                        "entity_type": "Drug",
+                    },
+                    "neighbor_labels": ["Entity"],
+                    "assertion": {
+                        "assertion_id": "ASSERT:1",
+                        "predicate": "treats",
+                        "confidence": 0.9,
+                        "polarity": "positive",
+                        "source_system": "primekg",
+                    },
+                    "role_in": "OBJECT",
+                    "role_out": "SUBJECT",
+                }
+            ],
+        }
+    )
+    client = GraphClient(neo4j=neo4j)
+    neighbors = client.get_neighbors("KG:Disease:d", depth=1)
+
+    assert neighbors[0].direction == "in"
+
+
+def test_get_neighbors_filters_invalid_assertion_with_schema_validator():
+    neo4j = FakeNeo4j(
+        responses={
+            "MATCH (anchor)": [
+                {
+                    "neighbor": {
+                        "entity_id": "KG:Drug:m",
+                        "preferred_name": "Drug X",
+                        "entity_type": "Drug",
+                    },
+                    "neighbor_labels": ["Entity"],
+                    "subject": {
+                        "entity_id": "KG:Finding:f",
+                        "preferred_name": "Finding X",
+                        "entity_type": "Finding",
+                    },
+                    "subject_labels": ["Entity"],
+                    "object": {
+                        "entity_id": "KG:Drug:m",
+                        "preferred_name": "Drug X",
+                        "entity_type": "Drug",
+                    },
+                    "object_labels": ["Entity"],
+                    "assertion": {
+                        "assertion_id": "ASSERT:bad",
+                        "predicate": "causes_adverse_event",
+                        "confidence": 0.9,
+                        "polarity": "positive",
+                        "source_system": "primekg",
+                    },
+                    "role_in": "SUBJECT",
+                    "role_out": "OBJECT",
+                }
+            ],
+        }
+    )
+    validator = AssertionDirectionValidator(
+        FakePredicateRegistry(
+            valid={("causes_adverse_event", "Drug", "AdverseEvent")},
+            predicates={"causes_adverse_event"},
+        )
+    )
+    client = GraphClient(neo4j=neo4j, assertion_validator=validator)
+
+    assert client.get_neighbors("KG:Finding:f", depth=1) == []
+
+
+def test_get_two_hop_paths_preserves_assertion_roles():
+    neo4j = FakeNeo4j(
+        responses={
+            "role_anchor_1": [
+                {
+                    "anchor": {"entity_id": "KG:Drug:m", "preferred_name": "Metformin"},
+                    "anchor_labels": ["Entity"],
+                    "mid": {"entity_id": "KG:Gene:g", "preferred_name": "AMPK"},
+                    "mid_labels": ["Entity"],
+                    "terminal": {"entity_id": "KG:Disease:d", "preferred_name": "T2D"},
+                    "terminal_labels": ["Entity"],
+                    "edge1": {
+                        "assertion_id": "A1",
+                        "predicate": "targets",
+                        "confidence": 0.8,
+                        "polarity": "positive",
+                        "source_system": "primekg",
+                    },
+                    "edge2": {
+                        "assertion_id": "A2",
+                        "predicate": "associated_with",
+                        "confidence": 0.7,
+                        "polarity": "positive",
+                        "source_system": "primekg",
+                    },
+                    "role_anchor_1": "SUBJECT",
+                    "role_mid_1": "OBJECT",
+                    "role_mid_2": "OBJECT",
+                    "role_terminal_2": "SUBJECT",
+                }
+            ]
+        }
+    )
+    client = GraphClient(neo4j=neo4j)
+    paths = client.get_two_hop_paths("KG:Drug:m", limit=3, min_confidence=0.5)
+
+    cypher, params = neo4j.calls[0]
+    assert cypher == GET_TWO_HOP_PATHS_CYPHER
+    assert params == {"key": "KG:Drug:m", "limit": 3, "min_conf": 0.5}
+    assert paths[0].edge1.subject_key == "KG:Drug:m"
+    assert paths[0].edge1.object_key == "KG:Gene:g"
+    assert paths[0].edge2.subject_key == "KG:Disease:d"
+    assert paths[0].edge2.object_key == "KG:Gene:g"
+
+
+def test_get_two_hop_paths_filters_invalid_edge_with_schema_validator():
+    neo4j = FakeNeo4j(
+        responses={
+            "role_anchor_1": [
+                {
+                    "anchor": {
+                        "entity_id": "KG:Drug:m",
+                        "preferred_name": "Metformin",
+                        "entity_type": "Drug",
+                    },
+                    "anchor_labels": ["Entity"],
+                    "mid": {
+                        "entity_id": "KG:Gene:g",
+                        "preferred_name": "AMPK",
+                        "entity_type": "Gene",
+                    },
+                    "mid_labels": ["Entity"],
+                    "terminal": {
+                        "entity_id": "KG:Disease:d",
+                        "preferred_name": "T2D",
+                        "entity_type": "Disease",
+                    },
+                    "terminal_labels": ["Entity"],
+                    "subject1": {"entity_id": "KG:Drug:m", "entity_type": "Drug"},
+                    "subject1_labels": ["Entity"],
+                    "object1": {"entity_id": "KG:Gene:g", "entity_type": "Gene"},
+                    "object1_labels": ["Entity"],
+                    "subject2": {"entity_id": "KG:Disease:d", "entity_type": "Disease"},
+                    "subject2_labels": ["Entity"],
+                    "object2": {"entity_id": "KG:Drug:m", "entity_type": "Drug"},
+                    "object2_labels": ["Entity"],
+                    "edge1": {
+                        "assertion_id": "A1",
+                        "predicate": "targets",
+                        "confidence": 0.8,
+                        "polarity": "positive",
+                        "source_system": "primekg",
+                    },
+                    "edge2": {
+                        "assertion_id": "A2",
+                        "predicate": "causes_adverse_event",
+                        "confidence": 0.7,
+                        "polarity": "positive",
+                        "source_system": "primekg",
+                    },
+                    "role_anchor_1": "SUBJECT",
+                    "role_mid_1": "OBJECT",
+                    "role_mid_2": "SUBJECT",
+                    "role_terminal_2": "OBJECT",
+                }
+            ]
+        }
+    )
+    validator = AssertionDirectionValidator(
+        FakePredicateRegistry(
+            valid={
+                ("targets", "Drug", "Gene"),
+                ("causes_adverse_event", "Drug", "AdverseEvent"),
+            },
+            predicates={"targets", "causes_adverse_event"},
+        )
+    )
+    client = GraphClient(neo4j=neo4j, assertion_validator=validator)
+
+    assert client.get_two_hop_paths("KG:Drug:m") == []
 
 
 def test_get_neighbors_raises_on_multi_hop():

@@ -14,6 +14,7 @@ from minimed_rag.ingestion.primekg.predicate_map import SimplePredicateMapper
 from minimed_rag.ingestion.umls.pipeline import UMLSIngestionPipeline
 from minimed_rag.ingestion.umls.predicate_map import UMLSPredicateMapper
 from minimed_rag.kg_build.neo4j_loader import Neo4jLoader
+from minimed_rag.schema_registry.predicate_registry import PredicateRegistry
 from minimed_rag.storage.neo4j import connect as neo4j_connect
 from minimed_rag.storage.postgres import connect as postgres_connect
 
@@ -68,6 +69,7 @@ def primekg(
             predicate_mapper=SimplePredicateMapper(),
             neo4j_loader=loader,
             graph_version=gv,
+            predicate_registry=PredicateRegistry(),
         )
         counts = pipeline.run(release=release, limit=limit)
         typer.echo(f"primekg ingest done: {counts}")

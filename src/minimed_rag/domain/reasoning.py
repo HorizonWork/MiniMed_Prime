@@ -1,4 +1,4 @@
-"""Pseudocode domain objects: reasoning tasks and paths."""
+"""Domain objects: reasoning tasks and paths."""
 
 from __future__ import annotations
 
@@ -44,9 +44,10 @@ class ReasoningPath:
     start_entity_id: str
     end_entity_id: str
     task_type: str
-    metapath_template_id: str
+    metapath_template_id: str = ""
     path_confidence: float = 0.0
     validity_label: str = "uncertain"
     graph_version: str = "kg_local"
     steps: list[ReasoningPathStep] = field(default_factory=list)
     negative_type: str | None = None
+    max_conflict_score: float = 0.0

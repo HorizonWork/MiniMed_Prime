@@ -36,7 +36,7 @@ predicates:
   targets:
     id: PRED:TARGETS
     domain: [Drug, Chemical]
-    range: [Gene, Protein]
+    range: [Gene, Protein, GeneProtein]
     directional: true
     inverse: target_of
     allowed_tasks: [mechanism, treatment]
@@ -46,7 +46,7 @@ predicates:
     allow_as_gold_path: true
   gene_associated_with_disease:
     id: PRED:GENE_ASSOCIATED_WITH_DISEASE
-    domain: [Gene, Protein]
+    domain: [Gene, Protein, GeneProtein]
     range: [Disease, Condition]
     directional: false
     inverse: disease_associated_with_gene
@@ -68,7 +68,7 @@ predicates:
     allow_as_gold_path: true
   participates_in:
     id: PRED:PARTICIPATES_IN
-    domain: [Gene, Protein]
+    domain: [Gene, Protein, GeneProtein]
     range: [Pathway]
     directional: true
     inverse: has_participant
@@ -87,4 +87,70 @@ predicates:
     disallowed_tasks: []
     min_confidence_for_training: 0.60
     default_weight: 0.75
+    allow_as_gold_path: true
+  interacts_with:
+    id: PRED:INTERACTS_WITH
+    domain: [Drug, Chemical]
+    range: [Drug, Chemical]
+    directional: false
+    inverse: interacts_with
+    allowed_tasks: [drug_interaction, treatment, safety]
+    disallowed_tasks: []
+    min_confidence_for_training: 0.65
+    default_weight: 0.7
+    allow_as_gold_path: true
+  causes:
+    id: PRED:CAUSES
+    domain: [Drug, Chemical, Exposure, Pathogen]
+    range: [Disease, Condition, AdverseEvent]
+    directional: true
+    inverse: caused_by
+    allowed_tasks: [etiology, safety, mechanism]
+    disallowed_tasks: [treatment]
+    min_confidence_for_training: 0.70
+    default_weight: 0.85
+    allow_as_gold_path: true
+  prevents:
+    id: PRED:PREVENTS
+    domain: [Drug, Chemical, Therapy, Procedure]
+    range: [Disease, Condition]
+    directional: true
+    inverse: prevented_by
+    allowed_tasks: [prevention, treatment]
+    disallowed_tasks: []
+    min_confidence_for_training: 0.70
+    default_weight: 0.8
+    allow_as_gold_path: true
+  contraindicated_for:
+    id: PRED:CONTRAINDICATED_FOR
+    domain: [Drug, Therapy, Procedure]
+    range: [Disease, Condition, Finding]
+    directional: true
+    inverse: contraindicates
+    allowed_tasks: [safety, treatment]
+    disallowed_tasks: []
+    min_confidence_for_training: 0.75
+    default_weight: 0.85
+    allow_as_gold_path: true
+  increases_risk_of:
+    id: PRED:INCREASES_RISK_OF
+    domain: [Exposure, Drug, Chemical, Gene]
+    range: [Disease, Condition, AdverseEvent]
+    directional: true
+    inverse: risk_increased_by
+    allowed_tasks: [etiology, safety, prevention]
+    disallowed_tasks: []
+    min_confidence_for_training: 0.65
+    default_weight: 0.7
+    allow_as_gold_path: true
+  decreases_risk_of:
+    id: PRED:DECREASES_RISK_OF
+    domain: [Drug, Chemical, Therapy]
+    range: [Disease, Condition]
+    directional: true
+    inverse: risk_decreased_by
+    allowed_tasks: [prevention, treatment]
+    disallowed_tasks: []
+    min_confidence_for_training: 0.65
+    default_weight: 0.7
     allow_as_gold_path: true

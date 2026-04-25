@@ -1,0 +1,10 @@
+retrieval:
+  name: kg_only
+  retriever: none
+  use_kg: true
+  top_k: 0
+  kg:
+    min_confidence: 0.5
+    hops: 2
+    max_paths: 20
+    per_entity_limit: 10

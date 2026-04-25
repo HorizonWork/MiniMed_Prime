@@ -1,8 +1,63 @@
-"""Pseudocode task-aware query planner."""
+"""Query planning.
+
+Two coexisting layers:
+
+- Phase 5 (this sprint): a lightweight ``QueryPlan`` enum
+  (TEXT_ONLY / GRAPH_ONLY / HYBRID) plus ``decide_strategy(...)`` for the
+  KG-augmented benchmark path. Heuristic-driven, zero metapath knowledge.
+- Phase 6+: ``RetrievalPlan`` + ``QueryPlanner`` for full metapath-aware
+  planning over the schema registry. Kept as scaffolding here.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
+
+
+class QueryPlan(StrEnum):
+    """Phase 5 retrieval strategy decision."""
+
+    TEXT_ONLY = "text_only"
+    GRAPH_ONLY = "graph_only"
+    HYBRID = "hybrid"
+
+
+QueryStrategy = QueryPlan
+
+
+def decide_strategy(
+    linked_entities,
+    *,
+    text_available: bool,
+    graph_available: bool,
+    min_entities_for_kg: int = 2,
+) -> QueryPlan:
+    """Pick the retrieval strategy for one question.
+
+    Heuristic:
+
+    - If neither side is wired, fall back to ``TEXT_ONLY`` (caller will
+      degrade to no-retrieval at the next layer).
+    - If text is unavailable but graph is + we have >=1 linked entity,
+      use ``GRAPH_ONLY``.
+    - If graph is unavailable, use ``TEXT_ONLY``.
+    - If both are available and we have >=``min_entities_for_kg`` linked
+      entities, prefer ``HYBRID`` — the per-spec "use both" path.
+    - Otherwise use ``TEXT_ONLY``: below-threshold graph anchors are too weak
+      for the Phase 5 hybrid path when text is available.
+    """
+    n = len(list(linked_entities)) if linked_entities is not None else 0
+
+    if not text_available and not graph_available:
+        return QueryPlan.TEXT_ONLY
+    if not text_available and graph_available and n >= 1:
+        return QueryPlan.GRAPH_ONLY
+    if not graph_available:
+        return QueryPlan.TEXT_ONLY
+    if n >= min_entities_for_kg:
+        return QueryPlan.HYBRID
+    return QueryPlan.TEXT_ONLY
 
 
 @dataclass(slots=True)

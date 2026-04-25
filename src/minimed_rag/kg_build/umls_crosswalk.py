@@ -36,13 +36,59 @@ def _source_id_to_sab_code(entity_type: str, source_id: str) -> list[tuple[str, 
         candidates.append(("GO", source_id))
     elif source_id.startswith("CHEBI:"):
         candidates.append(("CHEBI", source_id))
+    elif source_id.startswith(("R-HSA-", "R-MMU-", "REACT:")):
+        # PrimeKG pathway nodes use Reactome IDs (R-HSA-xxxxx for human,
+        # R-MMU- for mouse). UMLS SAB is "REACTOME"; some local releases
+        # also load it as "REACT" — try both.
+        candidates.append(("REACTOME", source_id))
+        candidates.append(("REACT", source_id))
+    elif source_id.startswith(("MESH:", "MSH:")):
+        # MeSH descriptors used by exposures + some PrimeKG disease/chemical
+        # entries imported from CTD. UMLS SAB is "MSH"; the colon is part of
+        # the local code in some loads, so try both.
+        bare = source_id.split(":", 1)[1] if ":" in source_id else source_id
+        candidates.append(("MSH", source_id))
+        candidates.append(("MSH", bare))
+    elif source_id.startswith("CTD:"):
+        # CTD ids are typically MeSH-based; try MSH after CTD.
+        bare = source_id.split(":", 1)[1]
+        candidates.append(("CTD", source_id))
+        candidates.append(("MSH", bare))
     elif source_id.startswith("DB") and entity_type in ("Drug", "Chemical"):
         candidates.append(("DRUGBANK", source_id))
         candidates.append(("RXNORM", source_id))
+    elif source_id.startswith(("ENSG", "ENST", "ENSP")) and entity_type in (
+        "Gene", "GeneProtein", "Protein"
+    ):
+        # Ensembl gene/transcript/protein. UMLS sometimes loads Ensembl as
+        # "OMIM" or "HGNC" cross-refs; we fall back to those.
+        candidates.append(("ENSEMBL", source_id))
+        candidates.append(("HGNC", source_id))
     elif source_id.isdigit() and entity_type in ("Gene", "GeneProtein", "Protein"):
         # PrimeKG gene IDs are NCBI gene IDs as bare integers.
         candidates.append(("NCBI", source_id))
     return candidates
+
+
+def _prefix_of(source_id: str) -> str:
+    """Return a short label used to bucket per-prefix match counts."""
+    if not source_id:
+        return "(empty)"
+    for token in (
+        "MONDO:", "DOID:", "UBERON:", "HP:", "GO:", "CHEBI:",
+        "R-HSA-", "R-MMU-", "REACT:",
+        "MESH:", "MSH:", "CTD:",
+    ):
+        if source_id.startswith(token):
+            return token.rstrip(":-")
+    for token in ("ENSG", "ENST", "ENSP"):
+        if source_id.startswith(token):
+            return token
+    if source_id.startswith("DB"):
+        return "DB"
+    if source_id.isdigit():
+        return "(numeric)"
+    return "(other)"
 
 
 @dataclass
@@ -53,6 +99,28 @@ class CrosswalkRunner:
     counts: dict[str, int] = field(
         default_factory=lambda: {"examined": 0, "matched": 0, "linked": 0}
     )
+    per_prefix: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    def _bump_prefix(self, prefix: str, key: str) -> None:
+        bucket = self.per_prefix.setdefault(prefix, {"examined": 0, "matched": 0})
+        bucket[key] += 1
+
+    def prefix_match_rate_summary(self) -> str:
+        """Render the per-prefix match table as multiline text for logging."""
+        if not self.per_prefix:
+            return "(no entities examined)"
+        rows = sorted(
+            self.per_prefix.items(),
+            key=lambda kv: kv[1]["examined"],
+            reverse=True,
+        )
+        lines = [f"  {'prefix':<14} {'examined':>10} {'matched':>10} {'rate':>8}"]
+        for prefix, bucket in rows:
+            ex = bucket["examined"]
+            mt = bucket["matched"]
+            rate = (mt / ex) if ex else 0.0
+            lines.append(f"  {prefix:<14} {ex:>10d} {mt:>10d} {rate:>7.1%}")
+        return "\n".join(lines)
 
     def iter_primekg_entities(self, graph_version: str | None = None) -> Iterator[dict]:
         cypher = (
@@ -79,6 +147,8 @@ class CrosswalkRunner:
         batch: list[dict] = []
         for entity in self.iter_primekg_entities(graph_version):
             self.counts["examined"] += 1
+            prefix = _prefix_of(entity.get("source_id", "") or "")
+            self._bump_prefix(prefix, "examined")
             resolved = self.resolve_cui(entity["entity_type"], entity["source_id"])
             if resolved is None:
                 continue
@@ -91,12 +161,14 @@ class CrosswalkRunner:
                 }
             )
             self.counts["matched"] += 1
+            self._bump_prefix(prefix, "matched")
             if len(batch) >= self.batch_size:
                 self._flush(batch)
                 batch = []
         if batch:
             self._flush(batch)
         logger.info("umls_crosswalk: %s", self.counts)
+        logger.info("umls_crosswalk per-prefix:\n%s", self.prefix_match_rate_summary())
         return dict(self.counts)
 
     def _flush(self, rows: Iterable[dict]) -> None:

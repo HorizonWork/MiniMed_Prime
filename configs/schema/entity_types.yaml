@@ -9,6 +9,22 @@ entity_types:
   AdverseEvent: {parent: Entity}
   Gene: {parent: Entity}
   Protein: {parent: Entity}
+  GeneProtein: {parent: Entity}
   Pathway: {parent: Entity}
   Procedure: {parent: Entity}
   Therapy: {parent: Entity}
+  # Phase 6.5 additions — emitted by ingestion/primekg/normalizer.py via
+  # CamelCase conversion of raw PrimeKG node types. Without these
+  # declarations, ~25% of PrimeKG (Gene Ontology + Anatomy + Exposure
+  # subgraphs) is invisible to template-anchored path traversal.
+  Anatomy: {parent: Entity}
+  Phenotype: {parent: Entity}
+  EffectPhenotype: {parent: Phenotype}
+  BiologicalProcess: {parent: Entity}
+  MolecularFunction: {parent: Entity}
+  CellularComponent: {parent: Entity}
+  Exposure: {parent: Entity}
+  # Pathogen is reserved for the new `causes` predicate domain
+  # (Drug/Chemical/Exposure/Pathogen → Disease/Condition/AdverseEvent).
+  # Not currently emitted by PrimeKG; kept in sync with predicates.yaml.
+  Pathogen: {parent: Entity}

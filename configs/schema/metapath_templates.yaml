@@ -29,3 +29,24 @@ metapaths:
     max_depth: 3
     priority: 0.8
     min_edge_confidence: 0.60
+
+  gene_disease_direct:
+    task_type: gene_disease
+    pattern: [[Disease, gene_associated_with_disease, Gene]]
+    max_depth: 1
+    priority: 1.0
+    min_edge_confidence: 0.55
+
+  gene_disease_drug_target:
+    task_type: gene_disease
+    pattern: [[Disease, gene_associated_with_disease, Gene], [Gene, target_of, Drug]]
+    max_depth: 2
+    priority: 0.70
+    min_edge_confidence: 0.60
+
+  gene_disease_pathway:
+    task_type: gene_disease
+    pattern: [[Disease, involved_in, Pathway], [Pathway, has_participant, Gene]]
+    max_depth: 2
+    priority: 0.65
+    min_edge_confidence: 0.55

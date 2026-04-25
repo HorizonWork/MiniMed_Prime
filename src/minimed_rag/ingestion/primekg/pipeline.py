@@ -38,6 +38,7 @@ class PrimeKGIngestionPipeline(SourceIngestionPipeline):
         predicate_mapper: SimplePredicateMapper | None = None,
         neo4j_loader: Any = None,
         graph_version: str = "kg_local",
+        predicate_registry: Any = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -45,6 +46,7 @@ class PrimeKGIngestionPipeline(SourceIngestionPipeline):
         self.predicate_mapper = predicate_mapper or SimplePredicateMapper()
         self.neo4j_loader = neo4j_loader
         self.graph_version = graph_version
+        self.predicate_registry = predicate_registry
 
     # ── Streaming ingest ─────────────────────────────────────────────────────
     def run(
@@ -76,6 +78,7 @@ class PrimeKGIngestionPipeline(SourceIngestionPipeline):
                 self.predicate_mapper,
                 source_release=release,
                 graph_version=self.graph_version,
+                predicate_registry=self.predicate_registry,
             ):
                 if record.record_type == "source_entity":
                     eid = record.payload["entity_id"]
@@ -128,6 +131,7 @@ class PrimeKGIngestionPipeline(SourceIngestionPipeline):
             self.predicate_mapper,
             source_release="local",
             graph_version=self.graph_version,
+            predicate_registry=self.predicate_registry,
         )
 
     def stream_records(
@@ -144,4 +148,5 @@ class PrimeKGIngestionPipeline(SourceIngestionPipeline):
                 self.predicate_mapper,
                 source_release=release,
                 graph_version=self.graph_version,
+                predicate_registry=self.predicate_registry,
             )

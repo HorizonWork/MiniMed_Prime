@@ -20,18 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass(slots=True)
-class GraphFact:
-    subject_key: str
-    subject_name: str
-    predicate: str
-    object_key: str
-    object_name: str
-    confidence: float
-    polarity: str
-    source_system: str
-    assertion_id: str
+from minimed_rag.retrieval.graph_retriever import GraphFact
 
 
 @dataclass(slots=True)

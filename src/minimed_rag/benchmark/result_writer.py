@@ -11,6 +11,11 @@ class RetrievalDiagnostics:
     corpus_hit_rate: float  # fraction of examples that got ≥1 chunk
     avg_score: float
     avg_latency_s: float
+    # Phase 5 KG diagnostics — present when the retriever surfaces graph paths.
+    kg_hit_rate: float | None = None      # fraction of examples with ≥1 graph path
+    avg_kg_paths: float | None = None     # mean graph paths per example
+    avg_kg_latency_s: float | None = None # mean graph retrieval latency
+    n_conflicts: int | None = None        # graph-vs-text conflicts logged
 
 
 @dataclass
@@ -28,6 +33,10 @@ class BenchmarkResult:
     retrieval_hit: bool = False
     retrieval_score: float = 0.0
     retrieval_latency_s: float = 0.0
+    # Phase 5 KG diagnostics (defaults keep older serialised reports valid)
+    kg_path_count: int = 0
+    kg_latency_s: float = 0.0
+    linked_entities: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -103,6 +112,14 @@ def _write_markdown(report: BenchmarkReport, path: Path) -> None:
             f"| Avg Retrieval Score | {d.avg_score:.3f} |",
             f"| Avg Retrieval Latency | {d.avg_latency_s:.3f}s |",
         ]
+        if d.kg_hit_rate is not None:
+            lines += [
+                f"| KG Hit Rate | {d.kg_hit_rate:.1%} |",
+                f"| Avg KG Paths | {d.avg_kg_paths or 0.0:.2f} |",
+                f"| Avg KG Latency | {d.avg_kg_latency_s or 0.0:.3f}s |",
+            ]
+        if d.n_conflicts is not None:
+            lines.append(f"| Graph↔Text Conflicts | {d.n_conflicts} |")
 
     lines += [
         "",

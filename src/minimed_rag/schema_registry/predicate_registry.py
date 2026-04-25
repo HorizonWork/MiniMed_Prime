@@ -7,6 +7,10 @@ from pathlib import Path
 
 from minimed_rag.common.config import load_yaml
 
+DEFAULT_PREDICATE_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[3] / "configs" / "schema" / "predicates.yaml"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class PredicateRule:
@@ -25,8 +29,9 @@ class PredicateRule:
 
 
 class PredicateRegistry:
-    def __init__(self, path: str | Path = "configs/schema/predicates.yaml"):
-        raw = load_yaml(path).get("predicates", {})
+    def __init__(self, path: str | Path | None = None):
+        schema_path = Path(path) if path is not None else DEFAULT_PREDICATE_SCHEMA_PATH
+        raw = load_yaml(schema_path).get("predicates", {})
         self.rules = {name: PredicateRule(name=name, **values) for name, values in raw.items()}
         self.source_mappings: dict[tuple[str, str], list[str]] = {}
 
@@ -41,7 +46,9 @@ class PredicateRegistry:
 
     def is_valid_domain_range(self, predicate: str, subject_type: str, object_type: str) -> bool:
         rule = self.rules[predicate]
-        return self._matches(subject_type, rule.domain) and self._matches(object_type, rule.range)
+        return self.matches_type(subject_type, rule.domain) and self.matches_type(
+            object_type, rule.range
+        )
 
     def get_source_mappings(self, source_system: str, source_predicate: str) -> list[str]:
         return self.source_mappings.get((source_system, source_predicate), [source_predicate])
@@ -57,5 +64,23 @@ class PredicateRegistry:
         return "associated_with"
 
     @staticmethod
-    def _matches(entity_type: str, allowed: list[str]) -> bool:
+    def matches_type(entity_type: str | None, allowed: list[str]) -> bool:
+        """Tightened type matcher.
+
+        - Empty/None ``entity_type`` only matches when ``allowed`` is exactly
+          ``["Entity"]`` (genuinely entity-agnostic predicate; the missing
+          type is harmless since the predicate doesn't constrain it).
+        - Non-empty ``entity_type`` matches when ``"Entity"`` is in
+          ``allowed`` (wildcard) OR when the type is in ``allowed`` exactly.
+
+        Replaces the legacy `_matches` which silently passed any
+        entity_type when ``"Entity" in allowed``, including missing ones —
+        a false-positive in negative sampling and direction resolution.
+        """
+        if not entity_type:
+            return allowed == ["Entity"]
         return "Entity" in allowed or entity_type in allowed
+
+    @staticmethod
+    def _matches(entity_type: str, allowed: list[str]) -> bool:
+        return PredicateRegistry.matches_type(entity_type, allowed)

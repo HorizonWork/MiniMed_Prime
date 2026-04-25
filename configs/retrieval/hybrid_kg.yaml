@@ -1,0 +1,25 @@
+retrieval:
+  name: hybrid_kg
+  retriever: hybrid
+  use_kg: true
+  top_k: 10
+  max_context_chars: 2500
+  graph_budget_ratio: 0.4
+  fusion:
+    method: rrf
+    rrf_k: 60
+    weights:
+      bm25: 1.0
+      dense: 1.0
+  bm25:
+    index_path: artifacts/indexes/bm25_textbooks.pkl
+    candidate_k: 50
+  dense:
+    index_path: artifacts/indexes/dense_textbooks_bge-small-en-v1.5
+    model_name: BAAI/bge-small-en-v1.5
+    candidate_k: 50
+  kg:
+    min_confidence: 0.5
+    hops: 2
+    max_paths: 20
+    per_entity_limit: 10

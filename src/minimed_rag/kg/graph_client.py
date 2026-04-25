@@ -16,8 +16,10 @@ All Cypher assumes the Phase 4 reified-Assertion schema applied by
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+
+from minimed_rag.kg.assertion_validator import AssertionDirectionValidator
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +61,26 @@ class Neighbor:
     direction: str
 
 
+@dataclass(frozen=True, slots=True)
+class TwoHopPath:
+    """Two assertions touched while expanding anchor -> mid -> terminal.
+
+    ``edge1`` and ``edge2`` keep the true SUBJECT -> OBJECT direction from the
+    KG, which may differ from the traversal direction used to discover them.
+    """
+
+    anchor: Node
+    mid: Node
+    terminal: Node
+    edge1: Edge
+    edge2: Edge
+
+    @property
+    def confidence(self) -> float:
+        """Weakest-link confidence — used for sorting/pruning."""
+        return min(self.edge1.confidence, self.edge2.confidence)
+
+
 GET_NEIGHBORS_DEPTH_1_CYPHER = """
 MATCH (anchor)
 WHERE (anchor:Entity AND (anchor.entity_id = $key OR anchor.canonical_cui = $key))
@@ -66,10 +88,14 @@ WHERE (anchor:Entity AND (anchor.entity_id = $key OR anchor.canonical_cui = $key
 MATCH (a:Assertion)-[role_in:SUBJECT|OBJECT]->(anchor)
 WHERE a.is_current = true AND a.confidence >= $min_conf
 MATCH (a)-[role_out:SUBJECT|OBJECT]->(neighbor)
-WHERE id(neighbor) <> id(anchor)
-RETURN DISTINCT neighbor, a AS assertion,
+WHERE elementId(neighbor) <> elementId(anchor)
+MATCH (a)-[:SUBJECT]->(subject)
+MATCH (a)-[:OBJECT]->(object)
+RETURN DISTINCT neighbor, a AS assertion, subject, object,
        type(role_in) AS role_in, type(role_out) AS role_out,
-       labels(neighbor) AS neighbor_labels
+       labels(neighbor) AS neighbor_labels,
+       labels(subject) AS subject_labels,
+       labels(object) AS object_labels
 ORDER BY a.confidence DESC
 LIMIT $limit
 """.strip()
@@ -92,6 +118,47 @@ def _build_get_path_cypher(max_depth: int) -> str:
     return GET_PATH_CYPHER_TEMPLATE.replace("__MAX_DEPTH__", str(int(max_depth)))
 
 
+GET_TWO_HOP_PATHS_CYPHER = """
+MATCH (anchor)
+WHERE (anchor:Entity AND (anchor.entity_id = $key OR anchor.canonical_cui = $key))
+   OR (anchor:Concept AND anchor.cui = $key)
+MATCH (a1:Assertion)-[role_anchor_1:SUBJECT|OBJECT]->(anchor)
+MATCH (a1)-[role_mid_1:SUBJECT|OBJECT]->(mid)
+MATCH (a1)-[:SUBJECT]->(subject1)
+MATCH (a1)-[:OBJECT]->(object1)
+WHERE a1.is_current = true
+  AND a1.confidence >= $min_conf
+  AND elementId(mid) <> elementId(anchor)
+  AND type(role_anchor_1) <> type(role_mid_1)
+MATCH (a2:Assertion)-[role_mid_2:SUBJECT|OBJECT]->(mid)
+MATCH (a2)-[role_terminal_2:SUBJECT|OBJECT]->(terminal)
+MATCH (a2)-[:SUBJECT]->(subject2)
+MATCH (a2)-[:OBJECT]->(object2)
+WHERE a2.is_current = true
+  AND a2.confidence >= $min_conf
+  AND elementId(a2) <> elementId(a1)
+  AND elementId(terminal) <> elementId(anchor)
+  AND elementId(terminal) <> elementId(mid)
+  AND type(role_mid_2) <> type(role_terminal_2)
+RETURN DISTINCT
+       anchor, a1 AS edge1, mid, a2 AS edge2, terminal,
+       subject1, object1, subject2, object2,
+       labels(anchor) AS anchor_labels,
+       labels(mid) AS mid_labels,
+       labels(terminal) AS terminal_labels,
+       labels(subject1) AS subject1_labels,
+       labels(object1) AS object1_labels,
+       labels(subject2) AS subject2_labels,
+       labels(object2) AS object2_labels,
+       type(role_anchor_1) AS role_anchor_1,
+       type(role_mid_1) AS role_mid_1,
+       type(role_mid_2) AS role_mid_2,
+       type(role_terminal_2) AS role_terminal_2
+ORDER BY (a1.confidence + a2.confidence) DESC
+LIMIT $limit
+""".strip()
+
+
 FIND_ENTITY_BY_CUI_CYPHER = """
 MATCH (e:Entity)
 WHERE e.canonical_cui = $cui
@@ -101,7 +168,7 @@ LIMIT $limit
 
 
 FIND_ENTITY_BY_NAME_CYPHER = """
-CALL db.index.fulltext.queryNodes('entity_name_ft', $query) YIELD node, score
+CALL db.index.fulltext.queryNodes('entity_name_ft', $name_query) YIELD node, score
 WHERE node:Entity
 RETURN node, labels(node) AS node_labels, score
 ORDER BY score DESC
@@ -153,9 +220,43 @@ def _edge_from_assertion(
     )
 
 
+def _edge_from_roles(
+    assertion: dict,
+    left_key: str,
+    left_role: str,
+    right_key: str,
+    right_role: str,
+) -> Edge:
+    if left_role == "SUBJECT" and right_role == "OBJECT":
+        subject_key, object_key = left_key, right_key
+    elif left_role == "OBJECT" and right_role == "SUBJECT":
+        subject_key, object_key = right_key, left_key
+    else:
+        subject_key, object_key = left_key, right_key
+    return _edge_from_assertion(assertion, subject_key, object_key)
+
+
+def _assertion_matches_schema(
+    assertion: dict,
+    subject: Node | None,
+    object_: Node | None,
+    validator: AssertionDirectionValidator | None,
+) -> bool:
+    if validator is None:
+        return True
+    return validator.is_valid(
+        assertion.get("predicate", ""),
+        subject.entity_type if subject is not None else None,
+        object_.entity_type if object_ is not None else None,
+    )
+
+
 @dataclass
 class GraphClient:
     neo4j: Any
+    assertion_validator: AssertionDirectionValidator | None = field(
+        default_factory=AssertionDirectionValidator
+    )
 
     def get_neighbors(
         self,
@@ -187,7 +288,16 @@ class GraphClient:
                 assertion_data = assertion
             else:
                 assertion_data = dict(assertion)
-            direction = "out" if row.get("role_in") == "OBJECT" else "in"
+            subject = _node_from_row(row.get("subject"), row.get("subject_labels") or [])
+            object_ = _node_from_row(row.get("object"), row.get("object_labels") or [])
+            if not _assertion_matches_schema(
+                assertion_data,
+                subject,
+                object_,
+                self.assertion_validator,
+            ):
+                continue
+            direction = "out" if row.get("role_in") == "SUBJECT" else "in"
             results.append(
                 Neighbor(
                     node=node or Node(labels=()),
@@ -200,6 +310,75 @@ class GraphClient:
                 )
             )
         return results
+
+    def get_two_hop_paths(
+        self,
+        key: str,
+        *,
+        limit: int = 50,
+        min_confidence: float = 0.5,
+    ) -> list[TwoHopPath]:
+        """Return 2-hop reified paths anchored on ``key``.
+
+        One Cypher round-trip per call; the planner-side N+1 expansion is
+        intentionally avoided here to keep latency bounded as the question
+        entity count grows.
+        """
+        rows = self.neo4j.query(
+            GET_TWO_HOP_PATHS_CYPHER,
+            {"key": key, "limit": limit, "min_conf": min_confidence},
+        )
+        paths: list[TwoHopPath] = []
+        for row in rows:
+            anchor = _node_from_row(row.get("anchor"), row.get("anchor_labels") or [])
+            mid = _node_from_row(row.get("mid"), row.get("mid_labels") or [])
+            terminal = _node_from_row(row.get("terminal"), row.get("terminal_labels") or [])
+            if anchor is None or mid is None or terminal is None:
+                continue
+            edge1_raw = row.get("edge1") or {}
+            edge2_raw = row.get("edge2") or {}
+            edge1_data = edge1_raw if isinstance(edge1_raw, dict) else dict(edge1_raw)
+            edge2_data = edge2_raw if isinstance(edge2_raw, dict) else dict(edge2_raw)
+            subject1 = _node_from_row(row.get("subject1"), row.get("subject1_labels") or [])
+            object1 = _node_from_row(row.get("object1"), row.get("object1_labels") or [])
+            subject2 = _node_from_row(row.get("subject2"), row.get("subject2_labels") or [])
+            object2 = _node_from_row(row.get("object2"), row.get("object2_labels") or [])
+            if not _assertion_matches_schema(
+                edge1_data,
+                subject1,
+                object1,
+                self.assertion_validator,
+            ) or not _assertion_matches_schema(
+                edge2_data,
+                subject2,
+                object2,
+                self.assertion_validator,
+            ):
+                continue
+            edge1 = _edge_from_roles(
+                edge1_data,
+                anchor.key,
+                row.get("role_anchor_1", ""),
+                mid.key,
+                row.get("role_mid_1", ""),
+            )
+            edge2 = _edge_from_roles(
+                edge2_data,
+                mid.key,
+                row.get("role_mid_2", ""),
+                terminal.key,
+                row.get("role_terminal_2", ""),
+            )
+            paths.append(
+                TwoHopPath(
+                    anchor=anchor,
+                    mid=mid,
+                    terminal=terminal,
+                    edge1=edge1,
+                    edge2=edge2,
+                )
+            )
+        return paths
 
     def get_path(
         self,
@@ -242,7 +421,7 @@ class GraphClient:
         """
         rows = self.neo4j.query(
             FIND_ENTITY_BY_NAME_CYPHER,
-            {"query": name, "limit": limit},
+            {"name_query": name, "limit": limit},
         )
         return [
             node
