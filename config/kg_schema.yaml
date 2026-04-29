@@ -1,0 +1,379 @@
+# PrimeKG-X v0.1 — Medical KG schema for the TRM-Verifier RAG pipeline
+# S1 deliverable. Source of truth for nodes, edges, props consumed by
+# kg/ (build), retrieval/, tokenization/, and models/recursive_reasoning/.
+# Spec rationale: docs/01_Final_Project_Plan.md §3.1, §4.1, §4.2, §4.4
+
+version: "0.1.0"
+graph: "PrimeKG-X"
+description: >
+  PrimeKG v2.1 (10 node types, 30 edge types) extended with HPO-full,
+  DisGeNET-curated, LOINC, SNOMED procedures, and 100 ACC/AHA+NICE
+  clinical guidelines. Adds 2 node types (symptom, clinical_object) and
+  10 edge types for the clinical layer.
+
+# ---------------- NODE TYPES (12) ----------------
+# 10 inherited from PrimeKG + 2 new (symptom, clinical_object).
+# clinical_object is one storage table with a subtype discriminator
+# (lab_test | procedure | clinical_guideline) for Kuzu JOIN efficiency,
+# but represents three logical roles.
+node_types:
+
+  gene_protein:
+    ids: [HGNC, NCBIGene, UniProt, Ensembl]
+    props: [symbol, name, taxon]
+
+  drug:
+    ids: [DrugBankID, RxCUI, ChEMBL]
+    props: [name, smiles, mechanism, half_life_h, fda_status]
+
+  disease:
+    ids: [MONDO, OMIM, ICD10CM, SNOMED, UMLS_CUI]
+    props: [name, definition, prevalence]
+
+  phenotype:
+    ids: [HPO, UMLS_CUI]
+    props: [name, definition]
+
+  anatomy:
+    ids: [UBERON, FMA]
+    props: [name, system]
+
+  biological_process:
+    ids: [GO]
+    props: [name, definition]
+
+  molecular_function:
+    ids: [GO]
+    props: [name, definition]
+
+  cellular_component:
+    ids: [GO]
+    props: [name, definition]
+
+  pathway:
+    ids: [Reactome, KEGG, WikiPathways]
+    props: [name, definition]
+
+  exposure:
+    ids: [ECTO, CTD]
+    props: [name, category]
+
+  symptom:
+    ids: [SNOMED, UMLS_CUI]
+    props: [name, body_system]
+
+  clinical_object:
+    ids: [LOINC, SNOMED, GUIDELINE_DOI, UMLS_CUI]
+    props: [name, subtype]
+    subtypes: [lab_test, procedure, clinical_guideline]
+
+# ---------------- EDGE GLOBAL PROPS ----------------
+# Carried by every edge. weight is computed by kg/evidence_scoring.py
+# from (evidence_level, n_pubmed_citations, source).
+edge_global_props:
+  source: str
+  evidence_level: str
+  n_pubmed_citations: int
+  last_curated_date: date
+  weight: float
+
+# ---------------- EDGE TYPES (40) ----------------
+# 30 inherited from PrimeKG + 10 new (clinical extension).
+# Per-edge `props` lists ONLY the edge-specific extra properties;
+# the 5 edge_global_props above are implicit on every edge.
+edge_types:
+
+  # ---- Disease relations (PrimeKG, 5) ----
+  DISEASE_GENE_ASSOC:
+    head_type: disease
+    tail_type: gene_protein
+    symmetric: false
+    dag: false
+    props: [association_score, n_publications]
+
+  DISEASE_PHENOTYPE_POS:
+    head_type: disease
+    tail_type: phenotype
+    symmetric: false
+    dag: false
+    props: [frequency]
+
+  DISEASE_PHENOTYPE_NEG:
+    head_type: disease
+    tail_type: phenotype
+    symmetric: false
+    dag: false
+    props: []
+
+  DISEASE_PARENT:
+    head_type: disease
+    tail_type: disease
+    symmetric: false
+    dag: true
+    props: []
+
+  DISEASE_ANATOMY:
+    head_type: disease
+    tail_type: anatomy
+    symmetric: false
+    dag: false
+    props: []
+
+  # ---- Drug relations (PrimeKG, 10) ----
+  DRUG_INDICATION:
+    head_type: drug
+    tail_type: disease
+    symmetric: false
+    dag: false
+    props: []
+
+  DRUG_CONTRAINDICATION:
+    head_type: drug
+    tail_type: disease
+    symmetric: false
+    dag: false
+    props: []
+
+  DRUG_OFF_LABEL:
+    head_type: drug
+    tail_type: disease
+    symmetric: false
+    dag: false
+    props: []
+
+  DRUG_DRUG_INTERACTION:
+    head_type: drug
+    tail_type: drug
+    symmetric: true
+    dag: false
+    props: [severity]
+
+  DRUG_SIDE_EFFECT:
+    head_type: drug
+    tail_type: phenotype
+    symmetric: false
+    dag: false
+    props: [frequency]
+
+  DRUG_TARGET:
+    head_type: drug
+    tail_type: gene_protein
+    symmetric: false
+    dag: false
+    props: [action]   # agonist | antagonist | inhibitor | modulator
+
+  DRUG_TRANSPORTER:
+    head_type: drug
+    tail_type: gene_protein
+    symmetric: false
+    dag: false
+    props: []
+
+  DRUG_ENZYME:
+    head_type: drug
+    tail_type: gene_protein
+    symmetric: false
+    dag: false
+    props: []
+
+  DRUG_CARRIER:
+    head_type: drug
+    tail_type: gene_protein
+    symmetric: false
+    dag: false
+    props: []
+
+  DRUG_PARENT:
+    head_type: drug
+    tail_type: drug
+    symmetric: false
+    dag: true
+    props: []
+
+  # ---- Gene/protein relations (PrimeKG, 6) ----
+  PROTEIN_PROTEIN:
+    head_type: gene_protein
+    tail_type: gene_protein
+    symmetric: true
+    dag: false
+    props: [interaction_type]
+
+  GENE_PATHWAY:
+    head_type: gene_protein
+    tail_type: pathway
+    symmetric: false
+    dag: false
+    props: []
+
+  GENE_BP:
+    head_type: gene_protein
+    tail_type: biological_process
+    symmetric: false
+    dag: false
+    props: [evidence_code]
+
+  GENE_MF:
+    head_type: gene_protein
+    tail_type: molecular_function
+    symmetric: false
+    dag: false
+    props: [evidence_code]
+
+  GENE_CC:
+    head_type: gene_protein
+    tail_type: cellular_component
+    symmetric: false
+    dag: false
+    props: [evidence_code]
+
+  GENE_ANATOMY_EXPRESSED:
+    head_type: gene_protein
+    tail_type: anatomy
+    symmetric: false
+    dag: false
+    props: [expression_level]
+
+  # ---- Phenotype relations (PrimeKG, 2) ----
+  PHENOTYPE_PARENT:
+    head_type: phenotype
+    tail_type: phenotype
+    symmetric: false
+    dag: true
+    props: []
+
+  PHENOTYPE_PROTEIN:
+    head_type: phenotype
+    tail_type: gene_protein
+    symmetric: false
+    dag: false
+    props: []
+
+  # ---- Exposure relations (PrimeKG, 4) ----
+  EXPOSURE_DISEASE:
+    head_type: exposure
+    tail_type: disease
+    symmetric: false
+    dag: false
+    props: []
+
+  EXPOSURE_GENE:
+    head_type: exposure
+    tail_type: gene_protein
+    symmetric: false
+    dag: false
+    props: []
+
+  EXPOSURE_PROTEIN:
+    head_type: exposure
+    tail_type: gene_protein
+    symmetric: false
+    dag: false
+    props: []
+
+  EXPOSURE_BP:
+    head_type: exposure
+    tail_type: biological_process
+    symmetric: false
+    dag: false
+    props: []
+
+  # ---- Anatomy / pathway hierarchies (PrimeKG, 3) ----
+  ANATOMY_PARENT:
+    head_type: anatomy
+    tail_type: anatomy
+    symmetric: false
+    dag: true
+    props: []
+
+  ANATOMY_DOWNSTREAM:
+    head_type: anatomy
+    tail_type: anatomy
+    symmetric: false
+    dag: false
+    props: []
+
+  PATHWAY_PARENT:
+    head_type: pathway
+    tail_type: pathway
+    symmetric: false
+    dag: true
+    props: []
+
+  # ---- Clinical extension (10 new) ----
+  DISEASE_SYMPTOM:
+    head_type: disease
+    tail_type: symptom
+    symmetric: false
+    dag: false
+    props: [frequency]
+
+  LABTEST_DISEASE:
+    head_type: clinical_object   # subtype: lab_test
+    tail_type: disease
+    symmetric: false
+    dag: false
+    props: [test_purpose]        # screening | diagnosis | monitoring
+
+  PROCEDURE_DISEASE_TX:
+    head_type: clinical_object   # subtype: procedure
+    tail_type: disease
+    symmetric: false
+    dag: false
+    props: [tx_intent]           # curative | palliative | diagnostic
+
+  PROCEDURE_ANATOMY:
+    head_type: clinical_object   # subtype: procedure
+    tail_type: anatomy
+    symmetric: false
+    dag: false
+    props: []
+
+  GUIDELINE_DRUG:
+    head_type: clinical_object   # subtype: clinical_guideline
+    tail_type: drug
+    symmetric: false
+    dag: false
+    props: [recommendation_class]   # I | IIa | IIb | III
+
+  GUIDELINE_DISEASE:
+    head_type: clinical_object   # subtype: clinical_guideline
+    tail_type: disease
+    symmetric: false
+    dag: false
+    props: [recommendation_class]
+
+  # ---- 4 IS_A / XREF variants for the new node types ----
+  SYMPTOM_PARENT:
+    head_type: symptom
+    tail_type: symptom
+    symmetric: false
+    dag: true
+    props: []
+
+  LABTEST_PARENT:
+    head_type: clinical_object   # subtype: lab_test (LOINC hierarchy)
+    tail_type: clinical_object
+    symmetric: false
+    dag: true
+    props: []
+
+  PROCEDURE_PARENT:
+    head_type: clinical_object   # subtype: procedure (SNOMED hierarchy)
+    tail_type: clinical_object
+    symmetric: false
+    dag: true
+    props: []
+
+  XREF_CUI:
+    head_type: any   # cross-vocab mapping; head and tail can be any node type
+    tail_type: any
+    symmetric: true
+    dag: false
+    props: [cui]
+
+# ---------------- META ----------------
+meta:
+  total_node_types: 12
+  total_edge_types: 40
+  primekg_inherited: 30
+  clinical_extension: 10
